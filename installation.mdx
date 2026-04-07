@@ -1,0 +1,161 @@
+---
+title: "Installation"
+description: "Install and configure all dependencies for AMH Sistema de Oficios"
+---
+
+## System requirements
+
+| Requirement | Minimum version |
+|-------------|----------------|
+| Python | 3.10+ |
+| pip | 23+ |
+| MySQL | 8.0+ |
+| Operating system | Linux, macOS, or Windows |
+
+---
+
+## Steps
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/BrandonCVale/AMH_SISTEMA_OFICIOS.git
+    cd AMH_SISTEMA_OFICIOS
+    ```
+  </Step>
+
+  <Step title="Install Python dependencies">
+    The project's dependencies are pinned in `requirements.txt`:
+
+    ```text
+    Flask==3.1.2
+    Flask-Login==0.6.3
+    Flask-Mail==0.10.0
+    PyMySQL==1.1.2
+    python-dotenv==1.2.1
+    pypdf==6.7.1
+    reportlab==4.4.10
+    ```
+
+    Install them with or without a virtual environment:
+
+    <CodeGroup>
+      ```bash With virtual environment (recommended)
+      python -m venv venv
+      source venv/bin/activate        # macOS / Linux
+      venv\Scripts\activate           # Windows
+      pip install -r requirements.txt
+      ```
+
+      ```bash Without virtual environment
+      pip install -r requirements.txt
+      ```
+    </CodeGroup>
+
+    <Tip>
+      A virtual environment prevents dependency conflicts between projects and makes it easier to reproduce the exact environment on another machine.
+    </Tip>
+  </Step>
+
+  <Step title="Create the MySQL database">
+    Connect to your MySQL server and create the application database:
+
+    ```sql
+    CREATE DATABASE IF NOT EXISTS amh_oficios
+      CHARACTER SET utf8mb4
+      COLLATE utf8mb4_unicode_ci;
+    ```
+
+    Then run the project schema to create all required tables:
+
+    ```bash
+    mysql -u your_db_user -p amh_oficios < schema.sql
+    ```
+
+    <Note>
+      The application connects via PyMySQL using `DictCursor`. All results are returned as dictionaries. Connections are opened per request and closed automatically at teardown — no connection pool configuration is required.
+    </Note>
+  </Step>
+
+  <Step title="Configure environment variables">
+    Create a `.env` file in the project root. The application loads it at startup using python-dotenv (`load_dotenv()` in `app/config.py`).
+
+    ```env
+    # ── Application ───────────────────────────────────────────
+    SECRET_KEY=replace-with-a-long-random-string
+
+    # ── MySQL ─────────────────────────────────────────────────
+    MYSQL_HOST=127.0.0.1
+    MYSQL_USER=your_db_user
+    MYSQL_PASSWORD=your_db_password
+    MYSQL_DB=amh_oficios
+    DB_PORT=3306
+
+    # ── Email (SMTP) ──────────────────────────────────────────
+    MAIL_SERVER=smtp.example.com
+    MAIL_PORT=587
+    MAIL_USE_TLS=True
+    MAIL_USERNAME=your_email@example.com
+    MAIL_PASSWORD=your_email_password
+    MAIL_DEFAULT_SENDER=your_email@example.com
+    ```
+
+    ### Variable reference
+
+    | Variable | Type | Default | Description |
+    |----------|------|---------|-------------|
+    | `SECRET_KEY` | string | — | Flask session signing key. Must be set. |
+    | `MYSQL_HOST` | string | — | MySQL server hostname or IP address |
+    | `MYSQL_USER` | string | — | MySQL username |
+    | `MYSQL_PASSWORD` | string | — | MySQL password |
+    | `MYSQL_DB` | string | — | Name of the application database |
+    | `DB_PORT` | integer | `3306` | MySQL port |
+    | `MAIL_SERVER` | string | — | SMTP server hostname |
+    | `MAIL_PORT` | integer | `587` | SMTP port |
+    | `MAIL_USE_TLS` | string | — | Set to `True` to enable STARTTLS |
+    | `MAIL_USERNAME` | string | — | SMTP login username |
+    | `MAIL_PASSWORD` | string | — | SMTP login password |
+    | `MAIL_DEFAULT_SENDER` | string | — | From address used for all outgoing mail |
+
+    <Warning>
+      `SECRET_KEY` protects session cookies and CSRF tokens. Use a cryptographically random value of at least 32 characters in any shared or production environment. Never reuse the development key in production.
+    </Warning>
+
+    <Warning>
+      Add `.env` to your `.gitignore`. Committing it exposes database credentials and your secret key to anyone with repository access.
+    </Warning>
+  </Step>
+
+  <Step title="Run the development server">
+    ```bash
+    python run.py
+    ```
+
+    Flask starts the server on all interfaces at port 5000:
+
+    ```
+    * Running on http://0.0.0.0:5000
+    ```
+
+    Open `http://localhost:5000` in your browser. The root route redirects authenticated users to their dashboard and unauthenticated users to the login page.
+
+    <Warning>
+      The server launches with `debug=True` (set in `run.py`). This enables the interactive debugger and auto-reloader, which are unsafe in production. Use a production WSGI server such as Gunicorn or uWSGI when deploying outside of a development machine.
+    </Warning>
+
+    <Note>
+      The `FLASK_ENV` environment variable selects the configuration class. If it is not set, the app defaults to the `"default"` configuration, which maps to `Config` in `app/config.py`.
+    </Note>
+  </Step>
+</Steps>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Log in and process your first oficio
+  </Card>
+  <Card title="User roles" icon="users" href="/concepts/roles-and-permissions">
+    Understand what each role can do in the system
+  </Card>
+</CardGroup>

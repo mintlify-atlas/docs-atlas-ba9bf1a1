@@ -1,0 +1,160 @@
+---
+title: "Database schema"
+description: "MySQL database tables and their relationships in AMH Sistema de Oficios"
+---
+
+The database is MySQL. All queries use PyMySQL with `DictCursor`, returning rows as dictionaries. The schema consists of six core tables and four catalog tables.
+
+## Catalog tables
+
+Catalog tables hold fixed reference values and are joined into most queries.
+
+### `cat_roles`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_rol` | INT, PK | Role identifier |
+| `nombre` | VARCHAR | Role name |
+
+Known values: `1` = Gestor, `2` = Subdirector, `3` = JUD, `4` = Administrador.
+
+### `cat_areas`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_area` | INT, PK | Area identifier |
+| `nombre` | VARCHAR | Department area name |
+
+### `cat_estatus`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_estatus` | INT, PK | Status identifier |
+| `nombre` | VARCHAR | Status label |
+
+Known values: `1` = En Revisión, `2` = En Proceso, `4` = Finalizado, `5` = Rechazado, `6` = Aprobado.
+
+### `folios_contador`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `anio` | INT, PK | Calendar year |
+| `ultimo_folio` | INT | Last consecutive folio number issued for that year |
+
+<Note>
+  The service layer increments `ultimo_folio` with a locking `UPDATE` inside the open transaction before reading the new value back with a `SELECT`. If no row exists for the current year, one is inserted with `ultimo_folio = 1`. This guarantees unique, sequential folio numbers even under concurrent requests.
+</Note>
+
+## Core tables
+
+### `usuarios`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_usuario` | INT, PK | User identifier |
+| `nombre_completo` | VARCHAR | Full display name |
+| `correo_electronico` | VARCHAR, UNIQUE | Login email and notification address |
+| `contrasena_hash` | VARCHAR | Hashed password |
+| `puesto` | VARCHAR | Job title |
+| `id_rol` | INT, FK → `cat_roles` | User role (Gestor, Subdirector, JUD, Admin) |
+| `id_area` | INT, FK → `cat_areas` | Department area the user belongs to |
+| `activo` | TINYINT | Soft-delete flag: `1` = active, `0` = deactivated |
+
+<Note>
+  Users are never deleted from the database. Setting `activo = 0` deactivates the account. All lookups for active Subdirectores filter on `activo = 1` (e.g., when finding the Subdirector for an area to assign a new oficio).
+</Note>
+
+### `oficios`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_oficio` | INT, PK | Oficio identifier (also used as the upload directory name) |
+| `folio_interno` | VARCHAR, UNIQUE | Manual folio entered by the Gestor |
+| `folio_consecutivo` | INT | Auto-generated sequential number from `folios_contador` |
+| `asunto` | VARCHAR | Subject line |
+| `descripcion_solicitud` | TEXT | Full request description |
+| `id_usuario_creador` | INT, FK → `usuarios` | Gestor who created the oficio |
+| `id_usuario_asignado` | INT, FK → `usuarios` | Currently assigned recipient (Subdirector or JUD) |
+| `id_area_asignada` | INT, FK → `cat_areas` | Destination department area |
+| `id_estatus_actual` | INT, FK → `cat_estatus` | Current workflow status |
+| `fecha_creacion` | DATETIME | Timestamp when the oficio was created |
+| `fecha_lectura` | DATETIME, nullable | Timestamp when the assigned user first opened the oficio |
+| `fecha_respuesta` | DATETIME, nullable | Timestamp when the JUD submitted the response |
+| `texto_respuesta` | TEXT, nullable | JUD's written response text |
+| `instrucciones_subdirector` | TEXT, nullable | Instructions added by the Subdirector when assigning to a JUD |
+
+<Note>
+  `folio_interno` has a UNIQUE constraint. If a Gestor submits a folio that already exists, PyMySQL raises `IntegrityError` with MySQL error code `1062`. `ServicioOficio.procesar_nuevo_oficio()` catches this specifically and returns a user-facing message: `"El Folio '{folio_manual}' ya existe en el sistema."` The entire transaction is rolled back — no partial data is saved.
+</Note>
+
+### `documentos_oficio`
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_documento` | INT, PK | Document identifier |
+| `id_oficio` | INT, FK → `oficios` | Associated oficio |
+| `id_usuario_subio` | INT, FK → `usuarios` | User who uploaded the file |
+| `nombre_archivo_original` | VARCHAR | Original filename after `secure_filename()` sanitization |
+| `ruta_almacenamiento` | VARCHAR | Relative path from `static/`: e.g. `uploads/45/a1b2c3d4_solicitud.pdf` |
+| `extension` | VARCHAR | Lowercase file extension extracted from the filename |
+| `tipo_documento` | ENUM | `SOLICITUD`, `ANEXO_SOLICITUD`, or `RESPUESTA_OFICIAL` |
+| `fecha_subida` | DATETIME | Upload timestamp (default: current time) |
+
+### `historial_oficios`
+
+Append-only audit log. A new row is inserted at every workflow transition.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_historial` | INT, PK | History entry identifier |
+| `id_oficio` | INT, FK → `oficios` | Associated oficio |
+| `id_usuario_accion` | INT, FK → `usuarios` | User who triggered the transition |
+| `id_estatus_nuevo` | INT, FK → `cat_estatus` | Status after the transition |
+| `id_estatus_anterior` | INT, FK → `cat_estatus`, nullable | Status before the transition (NULL on initial creation) |
+| `comentarios` | TEXT | Hardcoded or user-supplied description of the action |
+| `fecha_movimiento` | DATETIME | Timestamp of the transition (`NOW()`) |
+
+### `peticiones`
+
+Internal requests sent by JUDs or Subdirectores to their superiors.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_peticion` | INT, PK | Petition identifier (also used as the upload directory name) |
+| `asunto` | VARCHAR | Subject line |
+| `folio_peticion` | VARCHAR, UNIQUE | Manual folio entered by the creator |
+| `descripcion` | TEXT | Full request description |
+| `id_usuario_creador` | INT, FK → `usuarios` | User who created the petition |
+| `id_destinatario` | INT, FK → `usuarios` | Recipient (Subdirector or Gestor) |
+| `id_estatus` | INT, FK → `cat_estatus` | Current status |
+| `respuesta_recibida` | TEXT, nullable | Response text from the recipient |
+| `fecha_creacion` | DATETIME | Creation timestamp |
+
+### `archivos_peticion`
+
+Files attached to a petition.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id_documento` | INT, PK | Document identifier |
+| `id_peticion` | INT, FK → `peticiones` | Associated petition |
+| `id_usuario_creador` | INT, FK → `usuarios` | User who uploaded the file |
+| `nombre_archivo` | VARCHAR | Sanitized filename |
+| `ruta_almacenamiento` | VARCHAR | Relative path from `static/`: e.g. `uploads/peticiones/12/a1b2c3d4_doc.pdf` |
+| `extension` | VARCHAR | Lowercase file extension |
+
+## Entity relationships
+
+```text
+cat_roles ◄──── usuarios ────► cat_areas
+                  │  │
+        ┌─────────┘  └──────────────────────┐
+        ▼                                   ▼
+     oficios ────► cat_estatus          peticiones ────► cat_estatus
+        │                                   │
+        ├──► documentos_oficio              └──► archivos_peticion
+        │
+        └──► historial_oficios ────► cat_estatus (×2: nuevo, anterior)
+
+folios_contador  (standalone, keyed by year)
+```

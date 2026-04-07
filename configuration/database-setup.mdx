@@ -1,0 +1,248 @@
+---
+title: "Database setup"
+description: "Set up the MySQL database for AMH Sistema de Oficios"
+---
+
+AMH Sistema de Oficios uses MySQL as its database backend. The application connects using [PyMySQL](https://pymysql.readthedocs.io/) with a per-request connection managed through Flask's application context (`g`). Connections are opened on first use within a request and automatically closed when the request context tears down.
+
+## Prerequisites
+
+- MySQL 8.0 or later, installed and running
+- A MySQL user with `CREATE`, `SELECT`, `INSERT`, `UPDATE`, `DELETE` privileges on the application database
+- The `DB_PORT`, `MYSQL_HOST`, `MYSQL_USER`, `MYSQL_PASSWORD`, and `MYSQL_DB` environment variables configured in your `.env` file (see [Environment variables](/configuration/environment-variables))
+
+## Setup steps
+
+<Steps>
+  <Step title="Create the database">
+    Connect to MySQL as an administrative user and create the application database:
+
+    ```sql
+    CREATE DATABASE amh_oficios CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+    -- Create a dedicated application user (recommended)
+    CREATE USER 'amh_user'@'localhost' IDENTIFIED BY 'your_secure_password';
+    GRANT ALL PRIVILEGES ON amh_oficios.* TO 'amh_user'@'localhost';
+    FLUSH PRIVILEGES;
+    ```
+
+    The database name must match the value of `MYSQL_DB` in your `.env` file.
+  </Step>
+
+  <Step title="Create the tables">
+    Run the following DDL statements to create all required tables. Execute them in the order shown to satisfy foreign key dependencies.
+
+    **Catalog tables** (referenced by other tables):
+
+    ```sql
+    CREATE TABLE cat_roles (
+        id_rol INT PRIMARY KEY AUTO_INCREMENT,
+        nombre VARCHAR(50) NOT NULL
+    );
+
+    CREATE TABLE cat_areas (
+        id_area INT PRIMARY KEY AUTO_INCREMENT,
+        nombre VARCHAR(100) NOT NULL,
+        activo TINYINT(1) NOT NULL DEFAULT 1
+    );
+
+    CREATE TABLE cat_estatus (
+        id_estatus INT PRIMARY KEY AUTO_INCREMENT,
+        nombre VARCHAR(50) NOT NULL
+    );
+    ```
+
+    **Users table**:
+
+    ```sql
+    CREATE TABLE usuarios (
+        id_usuario INT PRIMARY KEY AUTO_INCREMENT,
+        nombre_completo VARCHAR(150) NOT NULL,
+        correo_electronico VARCHAR(150) NOT NULL UNIQUE,
+        contrasena_hash VARCHAR(255) NOT NULL,
+        puesto VARCHAR(100),
+        id_rol INT NOT NULL,
+        id_area INT,
+        activo TINYINT(1) NOT NULL DEFAULT 1,
+        FOREIGN KEY (id_rol) REFERENCES cat_roles(id_rol),
+        FOREIGN KEY (id_area) REFERENCES cat_areas(id_area)
+    );
+    ```
+
+    **Folio counter table** (tracks consecutive folio numbers per year):
+
+    ```sql
+    CREATE TABLE folios_contador (
+        anio YEAR NOT NULL,
+        ultimo_folio INT NOT NULL DEFAULT 0,
+        PRIMARY KEY (anio)
+    );
+    ```
+
+    **Main oficios table**:
+
+    ```sql
+    CREATE TABLE oficios (
+        id_oficio INT PRIMARY KEY AUTO_INCREMENT,
+        folio_interno VARCHAR(50) NOT NULL UNIQUE,
+        folio_consecutivo INT NOT NULL,
+        asunto VARCHAR(255) NOT NULL,
+        descripcion_solicitud TEXT,
+        id_usuario_creador INT NOT NULL,
+        id_usuario_asignado INT,
+        id_area_asignada INT NOT NULL,
+        id_estatus_actual INT NOT NULL,
+        fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        fecha_lectura DATETIME,
+        fecha_respuesta DATETIME,
+        texto_respuesta TEXT,
+        instrucciones_subdirector TEXT,
+        FOREIGN KEY (id_usuario_creador) REFERENCES usuarios(id_usuario),
+        FOREIGN KEY (id_usuario_asignado) REFERENCES usuarios(id_usuario),
+        FOREIGN KEY (id_area_asignada) REFERENCES cat_areas(id_area),
+        FOREIGN KEY (id_estatus_actual) REFERENCES cat_estatus(id_estatus)
+    );
+    ```
+
+    **Oficio file attachments table**:
+
+    ```sql
+    CREATE TABLE documentos_oficio (
+        id_documento INT PRIMARY KEY AUTO_INCREMENT,
+        id_oficio INT NOT NULL,
+        id_usuario_subio INT NOT NULL,
+        nombre_archivo_original VARCHAR(255) NOT NULL,
+        ruta_almacenamiento VARCHAR(500) NOT NULL,
+        extension VARCHAR(20),
+        tipo_documento ENUM('SOLICITUD', 'ANEXO_SOLICITUD', 'RESPUESTA_OFICIAL') NOT NULL,
+        fecha_subida DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (id_oficio) REFERENCES oficios(id_oficio),
+        FOREIGN KEY (id_usuario_subio) REFERENCES usuarios(id_usuario)
+    );
+    ```
+
+    **Oficio audit trail table**:
+
+    ```sql
+    CREATE TABLE historial_oficios (
+        id_historial INT PRIMARY KEY AUTO_INCREMENT,
+        id_oficio INT NOT NULL,
+        id_usuario_accion INT NOT NULL,
+        id_estatus_nuevo INT NOT NULL,
+        id_estatus_anterior INT,
+        comentarios TEXT,
+        fecha_movimiento DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (id_oficio) REFERENCES oficios(id_oficio),
+        FOREIGN KEY (id_usuario_accion) REFERENCES usuarios(id_usuario),
+        FOREIGN KEY (id_estatus_nuevo) REFERENCES cat_estatus(id_estatus),
+        FOREIGN KEY (id_estatus_anterior) REFERENCES cat_estatus(id_estatus)
+    );
+    ```
+
+    **Peticiones table** (internal requests between roles):
+
+    ```sql
+    CREATE TABLE peticiones (
+        id_peticion INT PRIMARY KEY AUTO_INCREMENT,
+        asunto VARCHAR(255) NOT NULL,
+        folio_peticion VARCHAR(50),
+        descripcion TEXT,
+        id_usuario_creador INT NOT NULL,
+        id_destinatario INT NOT NULL,
+        id_estatus INT NOT NULL,
+        respuesta_recibida TEXT,
+        fecha_creacion DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (id_usuario_creador) REFERENCES usuarios(id_usuario),
+        FOREIGN KEY (id_destinatario) REFERENCES usuarios(id_usuario),
+        FOREIGN KEY (id_estatus) REFERENCES cat_estatus(id_estatus)
+    );
+    ```
+
+    **Petition file attachments table**:
+
+    ```sql
+    CREATE TABLE archivos_peticion (
+        id_documento INT PRIMARY KEY AUTO_INCREMENT,
+        id_peticion INT NOT NULL,
+        id_usuario_creador INT NOT NULL,
+        nombre_archivo VARCHAR(255) NOT NULL,
+        ruta_almacenamiento VARCHAR(500) NOT NULL,
+        extension VARCHAR(20),
+        FOREIGN KEY (id_peticion) REFERENCES peticiones(id_peticion),
+        FOREIGN KEY (id_usuario_creador) REFERENCES usuarios(id_usuario)
+    );
+    ```
+  </Step>
+
+  <Step title="Seed the catalog tables">
+    The application depends on specific role IDs and status values being present. Insert the required seed data:
+
+    **Roles** — The application checks role membership by `id_rol`. These IDs are hardcoded in the user model:
+
+    ```sql
+    INSERT INTO cat_roles (id_rol, nombre) VALUES
+        (1, 'Gestor'),
+        (2, 'Subdirector'),
+        (3, 'JUD'),
+        (4, 'Administrador');
+    ```
+
+    **Statuses** — The application references status IDs by hardcoded integer values. Insert with explicit IDs to ensure correctness:
+
+    ```sql
+    INSERT INTO cat_estatus (id_estatus, nombre) VALUES
+        (1, 'En Revisión'),
+        (2, 'En Proceso'),
+        (3, 'En Atención'),
+        (4, 'Finalizado'),
+        (5, 'Rechazado'),
+        (6, 'Aprobado');
+    ```
+
+    <Note>
+      Status IDs are used directly in code: `id_estatus_actual = 1` (assigned to Subdirector), `= 2` (assigned to JUD), `= 4` (Finalizado/closed), `= 5` (Rechazado for peticiones), `= 6` (Aprobado for peticiones). Do not change these ID values.
+    </Note>
+
+    **Areas** — Add at least one area before creating users. Areas can also be managed through the administrator panel once the application is running:
+
+    ```sql
+    INSERT INTO cat_areas (nombre, activo) VALUES
+        ('Administración General', 1);
+    ```
+  </Step>
+
+  <Step title="Create the first administrator user">
+    The application does not have a self-registration flow for administrators. Create the first admin account directly in the database. Use [Werkzeug's `generate_password_hash`](https://werkzeug.palletsprojects.com/en/stable/utils/#werkzeug.security.generate_password_hash) to hash the password:
+
+    ```python
+    from werkzeug.security import generate_password_hash
+    print(generate_password_hash("your_admin_password"))
+    ```
+
+    Then insert the user:
+
+    ```sql
+    INSERT INTO usuarios (nombre_completo, correo_electronico, contrasena_hash, puesto, id_rol, id_area, activo)
+    VALUES ('Admin Principal', 'admin@example.com', '<hash_from_above>', 'Administrador del Sistema', 4, 1, 1);
+    ```
+  </Step>
+
+  <Step title="Verify the connection">
+    Start the application and navigate to the login page. If the database connection is misconfigured, Flask will raise a `pymysql.err.OperationalError` on the first request that queries the database. A successful load of the login page at `http://localhost:5000` confirms the connection is working.
+  </Step>
+</Steps>
+
+## Table reference
+
+| Table | Purpose |
+|---|---|
+| `usuarios` | User accounts with role and area assignments |
+| `oficios` | Main document tracking table |
+| `documentos_oficio` | File attachment metadata for oficios |
+| `historial_oficios` | Full audit trail of status changes and actions |
+| `peticiones` | Internal requests between JUDs, Subdirectores, and Gestores |
+| `archivos_peticion` | File attachment metadata for peticiones |
+| `cat_roles` | Role catalog (1=Gestor, 2=Subdirector, 3=JUD, 4=Administrador) |
+| `cat_areas` | Department/area catalog |
+| `cat_estatus` | Document status catalog |
+| `folios_contador` | Per-year consecutive folio counter |

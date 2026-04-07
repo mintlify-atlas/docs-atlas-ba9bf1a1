@@ -1,0 +1,96 @@
+---
+title: "Environment variables"
+description: "All environment variables required to configure AMH Sistema de Oficios"
+---
+
+AMH Sistema de Oficios reads all configuration from environment variables via a `.env` file in the project root. These are loaded at startup through `python-dotenv` in `app/config.py`.
+
+## Complete `.env` example
+
+```env
+# Application
+SECRET_KEY=change-me-use-a-long-random-string-in-production
+
+# Database (MySQL)
+MYSQL_HOST=localhost
+MYSQL_USER=amh_user
+MYSQL_PASSWORD=your_db_password
+MYSQL_DB=amh_oficios
+DB_PORT=3306
+
+# Email (SMTP)
+MAIL_SERVER=smtp.gmail.com
+MAIL_PORT=587
+MAIL_USE_TLS=True
+MAIL_USERNAME=your_account@gmail.com
+MAIL_PASSWORD=your_app_password
+MAIL_DEFAULT_SENDER=your_account@gmail.com
+```
+
+<Warning>
+  `SECRET_KEY` must be a long, unpredictable random string in production. Flask uses it to cryptographically sign session cookies. Anyone who knows this value can forge session tokens and bypass authentication. Generate one with `python -c "import secrets; print(secrets.token_hex(32))"`.
+</Warning>
+
+---
+
+## Application
+
+<ParamField path="SECRET_KEY" type="string" required>
+  Flask secret key used to sign session cookies and CSRF tokens. Must be set to a strong random value in production. There is no default — the application will start but sessions will be insecure if this is empty.
+</ParamField>
+
+---
+
+## Database (MySQL)
+
+<ParamField path="MYSQL_HOST" type="string" required>
+  Hostname or IP address of the MySQL server. Use `localhost` when the database runs on the same machine as the application.
+</ParamField>
+
+<ParamField path="MYSQL_USER" type="string" required>
+  MySQL username the application uses to authenticate to the database.
+</ParamField>
+
+<ParamField path="MYSQL_PASSWORD" type="string" required>
+  Password for the MySQL user specified in `MYSQL_USER`.
+</ParamField>
+
+<ParamField path="MYSQL_DB" type="string" required>
+  Name of the MySQL database. This database must already exist before starting the application — the application does not create it automatically.
+</ParamField>
+
+<ParamField path="DB_PORT" type="integer" default="3306">
+  TCP port the MySQL server listens on. Parsed as an integer in `app/config.py` via `int(os.getenv("DB_PORT", 3306))`.
+</ParamField>
+
+---
+
+## Email (SMTP)
+
+<ParamField path="MAIL_SERVER" type="string" required>
+  Hostname of the SMTP server used to send email notifications. Examples: `smtp.gmail.com`, `smtp-mail.outlook.com`.
+</ParamField>
+
+<ParamField path="MAIL_PORT" type="integer" default="587">
+  TCP port for the SMTP connection. Port 587 is the standard port for SMTP with STARTTLS. Parsed as an integer via `int(os.getenv("MAIL_PORT", 587))`.
+</ParamField>
+
+<ParamField path="MAIL_USE_TLS" type="string" required>
+  Whether to use STARTTLS when connecting to the SMTP server. Must be the string `"True"` or `"False"`.
+
+  <Note>
+    This variable is read as a string and evaluated with a direct string comparison: `os.getenv("MAIL_USE_TLS") == "True"`. Setting it to `true` (lowercase), `1`, or `yes` will be treated as `False`. Use exactly `True` or `False`.
+  </Note>
+</ParamField>
+
+<ParamField path="MAIL_USERNAME" type="string" required>
+  SMTP authentication username. For most providers this is the full email address (e.g., `notifications@example.com`). This value is also used as the `sender` field on outgoing messages.
+</ParamField>
+
+<ParamField path="MAIL_PASSWORD" type="string" required>
+  Password for the SMTP account. When using Gmail with 2-Factor Authentication enabled, this must be a Gmail App Password, not the account password. See [Email setup](/configuration/email-setup) for details.
+</ParamField>
+
+<ParamField path="MAIL_DEFAULT_SENDER" type="string" required>
+  Default "From" address for outgoing emails. Should match `MAIL_USERNAME` for most SMTP providers, which require the sender address to match the authenticated account.
+</ParamField>

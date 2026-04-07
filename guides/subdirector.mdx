@@ -1,0 +1,122 @@
+---
+title: "Subdirector guide"
+description: "How to manage incoming oficios, assign them to JUDs, and handle peticiones as a Subdirector"
+---
+
+## Dashboard overview
+
+When you log in as a Subdirector, the dashboard displays three KPI cards and multiple sections:
+
+<CardGroup cols={3}>
+  <Card title="Recibidos" icon="inbox">
+    Total number of oficios received in your area across all statuses.
+  </Card>
+  <Card title="Por Asignar" icon="list-todo">
+    Oficios currently assigned to you with status 1 — received but not yet forwarded to a JUD.
+  </Card>
+  <Card title="Peticiones" icon="bell">
+    Number of pending peticiones from your JUDs that are awaiting your response (status 1).
+  </Card>
+</CardGroup>
+
+The dashboard contains four sections:
+
+- **Bandeja de entrada** — oficios with status 1 (newly received, not yet assigned to a JUD).
+- **Peticiones de JUDs** — formal requests submitted by JUDs in your area.
+- **Atendidos** — all oficios in your area that have moved past status 1 (assigned, in process, or finalized).
+- **Nueva Petición** — form to send a petición to a Gestor.
+
+---
+
+## Reviewing an oficio
+
+<Steps>
+  <Step title="Open an oficio from the inbox">
+    Click on any oficio in the **Bandeja de entrada** to open the review and assignment screen (`/oficios/reasignar_oficio/{id}`).
+  </Step>
+  <Step title="Review the details and documents">
+    The review screen shows the full oficio: both folios, subject, description, remitente, creation date, and all attached files. Download any file to review its contents before assigning.
+  </Step>
+  <Step title="Read receipt is set automatically">
+    Opening the review screen calls `marcar_oficio_como_visto`, which sets `fecha_lectura = NOW()` on the oficio record — but only if `fecha_lectura` is currently `NULL`. Subsequent views of the same oficio do not overwrite the original read timestamp.
+  </Step>
+</Steps>
+
+---
+
+## Assigning an oficio to a JUD
+
+<Steps>
+  <Step title="Select a JUD">
+    On the review screen, choose a JUD from the dropdown. The list is filtered to show only active users with role JUD (`id_rol = 3`) belonging to your area (`id_area`). If your area has no registered JUDs, a warning is shown and assignment is not possible.
+  </Step>
+  <Step title="Add instructions">
+    Enter your instructions for the JUD in the **Instrucciones** text field. This text is saved in the `instrucciones_subdirector` column on the oficio and displayed to the JUD in their work screen.
+  </Step>
+  <Step title="Assign the oficio">
+    Click the assign button to submit. The system:
+
+    1. Updates the oficio: sets `id_usuario_asignado` to the selected JUD, changes `id_estatus_actual` to `2` (En Proceso), clears `fecha_lectura`, and saves your instructions.
+    2. Writes a history record: `"Oficio asignado al JUD para su atención."` with status 2.
+    3. Sends an email to the JUD containing the folio, subject, description, your instructions, and **all files attached to the oficio** as email attachments.
+  </Step>
+</Steps>
+
+<Warning>
+  When you assign an oficio, the system emails the JUD with all physical files attached (main document and all annexes). Ensure the attachments are correct and final before assigning. If the email fails to send, the oficio is still assigned in the database and a warning flash message is shown, but the JUD will not receive an automated notification.
+</Warning>
+
+---
+
+## Viewing the attended history
+
+The **Atendidos** tab shows all oficios in your area with a status other than 1 — meaning they have been assigned, are in process, or are finalized. The table shows consecutive folio, internal folio, subject, and current status for each oficio.
+
+---
+
+## Creating a petición to a Gestor
+
+<Steps>
+  <Step title="Open the Nueva Petición form">
+    Click **Nueva Petición** on the dashboard to navigate to `/oficios/nueva_peticion_subdirector`.
+  </Step>
+  <Step title="Select a Gestor">
+    Choose the destination Gestor from the dropdown. The list shows all active users with role Gestor (`id_rol = 1`).
+  </Step>
+  <Step title="Fill in the form">
+    Complete all required fields:
+
+    | Field | Description |
+    |---|---|
+    | **Asunto** | Subject of the petición. |
+    | **Folio de petición** | Your reference number for this petición. Must be unique. |
+    | **Descripción** | Full description of your request. |
+  </Step>
+  <Step title="Attach a file">
+    Attach a supporting document. A file attachment is mandatory — submitting without one raises a validation error and the petición is not saved.
+  </Step>
+  <Step title="Submit">
+    The system saves the petición to the `peticiones` table and the file to `static/uploads/peticiones/{id_peticion}/`. It then sends an email to the selected Gestor with the petición details and the attached file.
+  </Step>
+</Steps>
+
+---
+
+## Responding to JUD peticiones
+
+JUDs in your area submit formal peticiones directed to you. These appear in the **Peticiones de JUDs** section.
+
+<Steps>
+  <Step title="Open a petición">
+    Click on a pending petición to open the response screen. You will see the JUD's name, folio, subject, description, creation date, and any attached files.
+  </Step>
+  <Step title="Review the attached files">
+    Download and review the JUD's supporting document before deciding.
+  </Step>
+  <Step title="Write a response">
+    Enter your response text in the response field.
+  </Step>
+  <Step title="Approve or reject">
+    Click **APROBADO** to approve (sets `id_estatus = 6`) or **RECHAZADO** to reject (sets `id_estatus = 5`). Your response text is saved to the `respuesta_recibida` column and becomes visible to the JUD in their dashboard.
+  </Step>
+</Steps>

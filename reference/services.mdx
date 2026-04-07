@@ -1,0 +1,355 @@
+---
+title: "Services reference"
+description: "Business logic classes and email functions in AMH Sistema de Oficios"
+---
+
+## ServicioOficio
+
+Defined in `app/services/oficio_service.py`. This class orchestrates all multi-step operations that require coordinating database writes, file I/O, PDF stamping, and email notifications within a single transaction.
+
+Allowed file extensions (enforced by `_archivo_es_permitido`):
+
+```python
+EXTENSIONES_PERMITIDAS = {"pdf", "doc", "docx", "xls", "xlsx", "jpg", "jpeg", "png"}
+```
+
+---
+
+### procesar_nuevo_oficio
+
+```python
+def procesar_nuevo_oficio(
+    self,
+    formulario: dict,
+    archivo_principal,
+    lista_anexos: list,
+    usuario_gestor: Usuario,
+) -> tuple[bool, str]
+```
+
+The primary entry point for the gestor workflow. Creates an oficio, persists all files, optionally stamps the main PDF with an acuse de recibido, and sends email notifications — all within a single database transaction.
+
+**Steps performed:**
+
+1. Looks up the subdirector for `formulario["id_area"]`. Returns `(False, message)` immediately if none is found.
+2. Starts a DB transaction (`conexion.begin()`).
+3. Calls `_obtener_siguiente_folio` to generate and lock a consecutive folio number for the current year.
+4. Inserts the oficio record via `crear_oficio_db`.
+5. For the main file: validates the extension, saves to disk, stamps the PDF if applicable, then inserts a `"SOLICITUD"` record in `documentos_oficio`.
+6. For each annex: validates, saves, and inserts an `"ANEXO_SOLICITUD"` record.
+7. Inserts an initial historial entry with status `1`.
+8. Commits the transaction.
+9. Sends email notifications (subdirector + optional external address). Email failure does **not** roll back the already-committed oficio.
+
+**Parameters:**
+
+- `formulario` — Dict with keys: `folio`, `id_area`, `asunto`, `descripcion_solicitud`, `correo_adicional`
+- `archivo_principal` — A Werkzeug `FileStorage` object for the main document
+- `lista_anexos` — List of Werkzeug `FileStorage` objects for annexes
+- `usuario_gestor` — The authenticated `Usuario` instance from `current_user`
+
+**Returns:**
+
+- `(True, "Oficio {folio} creado y notificado correctamente.")` on full success
+- `(True, "Oficio creado (Advertencia: No se pudo enviar el correo...)")` if DB succeeded but email failed
+- `(False, "El Folio '{folio}' ya existe en el sistema...")` on duplicate folio (`IntegrityError` 1062)
+- `(False, "Error interno: {detail}")` on any other exception, with full rollback
+
+**Example — how the route calls this service:**
+
+```python
+# From app/routes/oficios.py
+servicio = ServicioOficio()
+exito, mensaje = servicio.procesar_nuevo_oficio(
+    formulario, archivo_principal, lista_anexos, current_user
+)
+
+if exito:
+    flash(mensaje, "success")
+    return redirect(url_for("oficios.panel_control"))
+else:
+    flash(mensaje, "error")
+```
+
+---
+
+### procesar_respuesta_jud
+
+```python
+def procesar_respuesta_jud(
+    self,
+    id_oficio: int,
+    id_usuario: int,
+    texto_respuesta: str,
+    archivo,
+) -> tuple[bool, str]
+```
+
+Saves a JUD's response to an oficio. All steps run in a single transaction.
+
+**Steps performed:**
+
+1. Calls `actualizar_respuesta_oficio_db` to set `texto_respuesta`, `fecha_respuesta`, and `id_estatus_actual = 4`.
+2. If a file is provided and non-empty: validates, saves to disk, inserts a `"RESPUESTA_OFICIAL"` document record.
+3. Inserts a historial entry with status `4` and comment `"Oficio atendido y finalizado por el JUD."`.
+4. Commits.
+
+**Returns:** `(True, "Respuesta enviada correctamente.")` or `(False, "Error al guardar respuesta: {detail}")`.
+
+---
+
+### eliminar_oficio_total
+
+```python
+def eliminar_oficio_total(self, id_oficio: int) -> tuple[bool, str]
+```
+
+Admin-only operation. Deletes all DB records for an oficio and then removes the physical file directory from disk.
+
+**Steps performed:**
+
+1. Starts a transaction.
+2. Calls `eliminar_oficio_db` (cascades: historial → documentos → oficio).
+3. After the DB commit, calls `shutil.rmtree` on `static/uploads/{id_oficio}/` if the directory exists.
+
+<Note>
+  The directory removal happens **after** `conexion.commit()`. If `rmtree` raises an exception, the DB records will already be deleted and the inconsistency must be resolved manually.
+</Note>
+
+**Returns:** `(True, "Oficio y archivos eliminados correctamente.")` or `(False, "Error al eliminar oficio: {detail}")`.
+
+---
+
+### procesar_peticion_jud
+
+```python
+def procesar_peticion_jud(
+    self,
+    formulario: dict,
+    archivo,
+    usuario_jud: Usuario,
+) -> tuple[bool, str, str | None]
+```
+
+Creates a JUD petition directed at the subdirector of the JUD's own area. A file attachment is **required**.
+
+**Steps performed:**
+
+1. Resolves the subdirector via `obtener_subdirector_por_area(usuario_jud.id_area)`.
+2. Inserts the petition record via `crear_peticion_db`.
+3. Validates, saves the file to `static/uploads/peticiones/{id_peticion}/`, and inserts an `archivos_peticion` record.
+4. Commits.
+
+**Parameters:**
+
+- `formulario` — Dict with keys: `asunto`, `folio`, `descripcion_solicitud`
+- `archivo` — Werkzeug `FileStorage` object (required; raises if empty)
+- `usuario_jud` — The authenticated JUD `Usuario`
+
+**Returns:**
+
+- `(True, "Petición {folio} enviada correctamente.", ruta_bd)` — `ruta_bd` is the relative storage path used to attach the file in the notification email
+- `(False, "El folio '{folio}' ya existe.", None)` on duplicate folio
+- `(False, "Error al procesar la petición: {detail}", None)` on other errors
+
+---
+
+### procesar_peticion_subdirector
+
+```python
+def procesar_peticion_subdirector(
+    self,
+    formulario: dict,
+    archivo,
+    usuario_subdirector: Usuario,
+) -> tuple[bool, str, str | None]
+```
+
+Creates a subdirector petition directed at a specific gestor (resolved from `formulario["id_destinatario"]`). Behavior and return shape are identical to `procesar_peticion_jud`. A file attachment is **required**.
+
+---
+
+### Private methods
+
+<AccordionGroup>
+  <Accordion title="_guardar_archivo_en_disco(archivo, id_oficio)">
+    ```python
+    def _guardar_archivo_en_disco(self, archivo, id_oficio) -> tuple[str, str]
+    ```
+
+    Saves a file to `static/uploads/{id_oficio}/`. Prepends an 8-character UUID hex prefix to the sanitized filename to prevent collisions.
+
+    **Returns:** `(ruta_bd, nombre_seguro)` where `ruta_bd` is the relative path for DB storage (e.g. `"uploads/45/a1b2c3d4_solicitud.pdf"`) and `nombre_seguro` is the `secure_filename`-sanitized original name.
+  </Accordion>
+
+  <Accordion title="_guardar_archivo_peticion_en_disco(archivo, id_peticion)">
+    ```python
+    def _guardar_archivo_peticion_en_disco(self, archivo, id_peticion) -> tuple[str, str, str]
+    ```
+
+    Same logic as `_guardar_archivo_en_disco` but saves to a separate path: `static/uploads/peticiones/{id_peticion}/`.
+
+    **Returns:** `(ruta_bd, nombre_seguro, extension)` — the three-tuple also includes the lowercase file extension (e.g. `"pdf"`).
+  </Accordion>
+
+  <Accordion title="_archivo_es_permitido(nombre_archivo)">
+    ```python
+    def _archivo_es_permitido(self, nombre_archivo: str) -> bool
+    ```
+
+    Returns `True` if the file has an extension present in `EXTENSIONES_PERMITIDAS`. Returns `False` if there is no `.` in the filename.
+  </Accordion>
+
+  <Accordion title="_obtener_siguiente_folio(cursor, anio)">
+    ```python
+    def _obtener_siguiente_folio(self, cursor, anio: int) -> int
+    ```
+
+    Generates the next consecutive folio number for the given year in a concurrency-safe manner using the `folios_contador` table.
+
+    **Algorithm:**
+
+    1. `UPDATE folios_contador SET ultimo_folio = ultimo_folio + 1 WHERE anio = ?` — this row-locks the counter for the duration of the transaction.
+    2. If `rowcount == 0` (no row for this year), inserts `(anio, 1)` and returns `1`.
+    3. Otherwise, fetches and returns the updated `ultimo_folio` value.
+
+    Because this runs inside the same transaction as `crear_oficio_db`, a rollback will also undo the counter increment.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## ServicioAutenticacion
+
+Defined in `app/services/servicio_autenticacion.py` (note: the filename uses the Spanish convention, not `auth_service.py`).
+
+### intentar_login
+
+```python
+def intentar_login(self, email: str, password_plano: str) -> Optional[Usuario]
+```
+
+Validates login credentials. Looks up the user by email (active users only), then verifies the submitted password against the stored Werkzeug hash.
+
+**Steps:**
+
+1. Calls `buscar_usuario_por_email(email)` — returns `None` for unknown or inactive accounts.
+2. Calls `werkzeug.security.check_password_hash(usuario.contrasena_hash, password_plano)`.
+3. Returns the `Usuario` object if both checks pass, otherwise `None`.
+
+**Returns:** A `Usuario` instance on success, `None` on failure (wrong email, inactive account, or wrong password).
+
+**Example — how the auth route calls this service:**
+
+```python
+# From app/routes/auth.py
+servicio = ServicioAutenticacion()
+usuario = servicio.intentar_login(email, password)
+
+if usuario:
+    login_user(usuario)
+    flash("Has iniciado sesión correctamente.", "success")
+    return redirect(url_for("inicio"))
+else:
+    flash("Correo o contraseña incorrectos.", "error")
+```
+
+---
+
+## Email functions
+
+Defined in `app/services/email_service.py`. All functions use Flask-Mail and return `True` after sending. They raise an exception on send failure — callers are responsible for catching it.
+
+<Note>
+  Email functions for petitions (`enviar_notificacion_peticion_jud`, `enviar_notificacion_peticion_subdirector`) expect **relative** paths in `lista_archivos_adjuntos` and resolve them against `current_app.static_folder`. The other three functions expect **absolute** paths already joined with `current_app.root_path`.
+</Note>
+
+---
+
+### enviar_notificacion_de_nuevo_oficio
+
+```python
+def enviar_notificacion_de_nuevo_oficio(
+    datos: dict,
+    correo_subdirector: str,
+    lista_archivos_adjuntos: list[str] | None = None,
+) -> bool
+```
+
+Notifies the subdirector when a new oficio is created. Attaches all physical files.
+
+**`datos` keys:** `folio`, `asunto`, `area`, `descripcion`
+
+**Email subject:** `"Nuevo Oficio Asignado: {datos['folio']}"`
+
+---
+
+### enviar_notificacion_oficio_turnado
+
+```python
+def enviar_notificacion_oficio_turnado(
+    datos: dict,
+    correo_jud: str,
+    lista_rutas_adjuntos: list[str] | None = None,
+) -> bool
+```
+
+Notifies the assigned JUD when a subdirector turns an oficio over for attention. Includes the subdirector's instructions in the email body.
+
+**`datos` keys:** `folio_interno`, `asunto`, `instrucciones_subdirector`
+
+**Email subject:** `"Se te ha asignado un oficio para su atención: {datos['folio_interno']}"`
+
+---
+
+### enviar_notificacion_correo_externo
+
+```python
+def enviar_notificacion_correo_externo(
+    datos: dict,
+    correo_solicitante: str,
+    lista_archivos_adjuntos: list[str] | None = None,
+) -> bool
+```
+
+Sends a tracking confirmation to an external requester email address. Called optionally when `correo_adicional` is present on the new-oficio form.
+
+**`datos` keys:** `folio`, `asunto`, `area`
+
+**Email subject:** `"AMH - SEGUIMIENTO DE SOLICITUD"`
+
+---
+
+### enviar_notificacion_peticion_jud
+
+```python
+def enviar_notificacion_peticion_jud(
+    datos: dict,
+    correo_subdirector: str,
+    lista_archivos_adjuntos: list[str] | None = None,
+) -> bool
+```
+
+Notifies the subdirector when a JUD submits a new petition. Expects relative paths in `lista_archivos_adjuntos` (resolved against `current_app.static_folder`).
+
+**`datos` keys:** `folio_interno`, `asunto`, `descripcion`
+
+**Email subject:** `"Nueva petición de JUD: {datos['folio_interno']}"`
+
+---
+
+### enviar_notificacion_peticion_subdirector
+
+```python
+def enviar_notificacion_peticion_subdirector(
+    datos: dict,
+    correo_gestor: str,
+    lista_archivos_adjuntos: list[str] | None = None,
+) -> bool
+```
+
+Notifies a gestor when a subdirector submits a petition addressed to them. Expects relative paths in `lista_archivos_adjuntos`.
+
+**`datos` keys:** `folio_interno`, `asunto`, `descripcion`
+
+**Email subject:** `"Nueva peticion realizada por un subdirector: {datos['folio_interno']}"`

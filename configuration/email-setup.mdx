@@ -1,0 +1,152 @@
+---
+title: "Email setup"
+description: "Configure SMTP email notifications for AMH Sistema de Oficios"
+---
+
+AMH Sistema de Oficios sends automatic email notifications at key points in the document workflow using [Flask-Mail](https://flask-mail.readthedocs.io/). Emails are sent synchronously during the request that triggers them and include physical file attachments read directly from the server.
+
+## Notification triggers
+
+The system sends email at four workflow points:
+
+| Event | Function | Recipient |
+|---|---|---|
+| New oficio created by Gestor | `enviar_notificacion_de_nuevo_oficio` | Subdirector of the assigned area |
+| Optional external notification on oficio creation | `enviar_notificacion_correo_externo` | Additional email address provided in the creation form |
+| Oficio assigned (turnado) to JUD by Subdirector | `enviar_notificacion_oficio_turnado` | The assigned JUD |
+| New petición submitted by JUD | `enviar_notificacion_peticion_jud` | Subdirector of the JUD's area |
+| New petición submitted by Subdirector | `enviar_notificacion_peticion_subdirector` | Gestor recipient |
+
+<Note>
+  Email failures are handled gracefully. If sending fails, the oficio or petición is **not** rolled back — the record is already committed to the database before the email attempt. The user sees a warning message, and the error is printed to the server log. The application continues normally.
+</Note>
+
+---
+
+## Supported providers
+
+Any SMTP server that supports STARTTLS on port 587 works with this application. Common options:
+
+- **Gmail** — `smtp.gmail.com`, port 587, TLS enabled
+- **Outlook / Hotmail** — `smtp-mail.outlook.com`, port 587, TLS enabled
+- **Custom SMTP relay** — any internal or third-party SMTP server
+
+---
+
+## Gmail setup
+
+Gmail requires an **App Password** when the account has 2-Factor Authentication enabled. Using the account's main password will result in an authentication error.
+
+<Steps>
+  <Step title="Enable 2-Factor Authentication">
+    Go to your Google Account at [myaccount.google.com](https://myaccount.google.com), navigate to **Security**, and enable **2-Step Verification** if it is not already active. App Passwords are only available when 2FA is on.
+  </Step>
+
+  <Step title="Generate an App Password">
+    In your Google Account, go to **Security** → **2-Step Verification** → **App passwords** (at the bottom of the page).
+
+    Select **Mail** as the app and **Other (Custom name)** as the device. Enter a name like `AMH Sistema de Oficios`, then click **Generate**.
+
+    Google will display a 16-character password. Copy it — it will not be shown again.
+  </Step>
+
+  <Step title="Set the App Password in your .env">
+    Use the 16-character App Password as the value of `MAIL_PASSWORD`. Do not use your Google account password.
+
+    ```env
+    MAIL_SERVER=smtp.gmail.com
+    MAIL_PORT=587
+    MAIL_USE_TLS=True
+    MAIL_USERNAME=your_account@gmail.com
+    MAIL_PASSWORD=abcd efgh ijkl mnop
+    MAIL_DEFAULT_SENDER=your_account@gmail.com
+    ```
+  </Step>
+</Steps>
+
+---
+
+## Configuration
+
+<Tabs>
+  <Tab title="Gmail">
+    ```env
+    MAIL_SERVER=smtp.gmail.com
+    MAIL_PORT=587
+    MAIL_USE_TLS=True
+    MAIL_USERNAME=notifications@gmail.com
+    MAIL_PASSWORD=abcd efgh ijkl mnop
+    MAIL_DEFAULT_SENDER=notifications@gmail.com
+    ```
+  </Tab>
+  <Tab title="Outlook / Hotmail">
+    ```env
+    MAIL_SERVER=smtp-mail.outlook.com
+    MAIL_PORT=587
+    MAIL_USE_TLS=True
+    MAIL_USERNAME=notifications@outlook.com
+    MAIL_PASSWORD=your_outlook_password
+    MAIL_DEFAULT_SENDER=notifications@outlook.com
+    ```
+  </Tab>
+  <Tab title="Generic SMTP">
+    ```env
+    MAIL_SERVER=mail.example.com
+    MAIL_PORT=587
+    MAIL_USE_TLS=True
+    MAIL_USERNAME=app@example.com
+    MAIL_PASSWORD=your_smtp_password
+    MAIL_DEFAULT_SENDER=app@example.com
+    ```
+  </Tab>
+</Tabs>
+
+---
+
+## Attachment behavior
+
+All email notifications that include documents attach the physical files inline in the message body — not as download links. The service reads files from the server's filesystem at send time using `open(path, "rb")`.
+
+- **Oficio attachments** are resolved from `app/static/` using `current_app.root_path` combined with the `ruta_almacenamiento` value stored in `documentos_oficio`.
+- **Petición attachments** are resolved using `current_app.static_folder` combined with the relative path stored in `archivos_peticion`.
+- MIME types are auto-detected via Python's `mimetypes.guess_type()`. Files with unrecognized types are sent as `application/octet-stream`.
+- If a file does not exist at the expected path, it is silently skipped — the email is still sent without that attachment.
+
+Large file uploads (e.g., scanned PDFs) will be included in full as base64-encoded attachments, which increases the size of the outgoing SMTP message proportionally.
+
+---
+
+## Testing
+
+To verify that email is working end-to-end:
+
+1. Start the application and log in as a **Gestor**.
+2. Create a new oficio assigned to an area that has a Subdirector user with a reachable email address.
+3. Submit the form.
+4. Check the Subdirector's inbox for a message with the subject `Nuevo Oficio Asignado: <folio>`.
+
+If the email arrives, the SMTP configuration is correct. If the oficio is created but you see the warning *"Oficio creado (Advertencia: No se pudo enviar el correo, verifique configuración)."*, check the server logs for the underlying SMTP error.
+
+---
+
+## Troubleshooting
+
+**`MAIL_USE_TLS` is set but TLS is not being used**
+
+The value must be the exact string `True` (capital T). The comparison in `app/config.py` is `os.getenv("MAIL_USE_TLS") == "True"`. Values like `true`, `TRUE`, `1`, or `yes` evaluate to `False`.
+
+**Gmail authentication error (`535 5.7.8 Username and Password not accepted`)**
+
+Gmail is rejecting the account password. Enable 2-Factor Authentication on the Google account and use a Gmail App Password as `MAIL_PASSWORD`. Direct password authentication is blocked for accounts with 2FA enabled.
+
+**`Connection refused` or `Network unreachable` on SMTP connect**
+
+The application server cannot reach `MAIL_SERVER` on `MAIL_PORT`. Check firewall rules, verify the hostname resolves correctly, and confirm the SMTP server is accepting connections from the application host.
+
+**Attachments missing from received email**
+
+The file was not found at the expected path on the server at send time. Check the server logs for lines like `ERROR: No se encontró el archivo físico en la ruta: <path>`. Verify that `static/uploads/` is writable and that files were saved successfully during oficio creation.
+
+**Email fails but oficio is still saved**
+
+This is expected behavior. The application commits the database transaction before attempting to send email. A mail failure does not affect data integrity. Fix the SMTP configuration and the next oficio creation will send successfully.

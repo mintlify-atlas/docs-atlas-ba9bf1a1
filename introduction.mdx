@@ -1,0 +1,72 @@
+---
+title: "AMH Sistema de Oficios"
+description: "Gestión centralizada de oficios y peticiones para el Ayuntamiento Municipal de Hermosillo"
+---
+
+## What is AMH Sistema de Oficios?
+
+AMH Sistema de Oficios is a web-based document management platform built for municipal government operations. It digitizes the full lifecycle of official documents — from creation and routing to assignment, response, and archival — replacing paper-based workflows with a traceable, role-driven system.
+
+The platform connects four user roles in a structured chain of custody:
+
+- **Gestores** create and send oficios to the relevant department
+- **Subdirectores** receive, review, and assign oficios to their JUDs
+- **JUDs** (Jefes de Unidad Departamental) process and respond to assigned oficios
+- **Administrators** oversee users, roles, and the complete document archive
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Get the system running and process your first oficio in minutes
+  </Card>
+  <Card title="Installation" icon="server" href="/installation">
+    Set up Flask, MySQL, and all dependencies for your environment
+  </Card>
+  <Card title="User Roles" icon="users" href="/concepts/roles-and-permissions">
+    Understand the four roles and what each user can do
+  </Card>
+  <Card title="Oficio Lifecycle" icon="arrows-spin" href="/concepts/oficio-lifecycle">
+    Trace how an oficio moves from creation to resolution
+  </Card>
+</CardGroup>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Role-based dashboards" icon="gauge-high">
+    Each role sees a personalized dashboard with relevant KPIs, pending work, and action queues
+  </Card>
+  <Card title="Automatic PDF stamping" icon="stamp">
+    Uploaded PDFs receive an automatic receipt stamp (acuse de recibido) with folio, date, and recipient
+  </Card>
+  <Card title="Email notifications" icon="envelope">
+    Automatic emails at every workflow step keep all parties informed without manual follow-up
+  </Card>
+  <Card title="Peticiones workflow" icon="paper-plane">
+    JUDs and Subdirectores can submit formal requests up the hierarchy with full document support
+  </Card>
+  <Card title="Consecutive folio numbering" icon="list-ol">
+    Every oficio receives a unique sequential folio number per year, generated with concurrency safety
+  </Card>
+  <Card title="File attachment support" icon="paperclip">
+    Attach PDF, DOC, Excel, and image files to oficios and peticiones with secure server-side storage
+  </Card>
+</CardGroup>
+
+## User guides
+
+Jump directly to the guide for your role:
+
+<CardGroup cols={2}>
+  <Card title="Gestor guide" icon="pen-to-square" href="/guides/gestor">
+    Create oficios, attach documents, track status, and manage incoming peticiones
+  </Card>
+  <Card title="Subdirector guide" icon="sitemap" href="/guides/subdirector">
+    Review incoming oficios, assign them to JUDs, and respond to peticiones
+  </Card>
+  <Card title="JUD guide" icon="clipboard-check" href="/guides/jud">
+    Process assigned oficios, submit responses, and create peticiones
+  </Card>
+  <Card title="Administrator guide" icon="shield-halved" href="/guides/administrator">
+    Manage users, monitor all oficios, and maintain system health
+  </Card>
+</CardGroup>

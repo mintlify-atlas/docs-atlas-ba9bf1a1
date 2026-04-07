@@ -1,0 +1,176 @@
+---
+title: "Peticiones"
+description: "The requests workflow that allows JUDs and Subdirectores to make formal requests up the hierarchy"
+---
+
+## What is a petición?
+
+A petición is a formal request submitted up the organizational hierarchy. It is separate from the main oficio workflow and is used when someone needs authorization, resources, or an answer from a superior. Peticiones are stored in the `peticiones` table and linked to files in `archivos_peticion`.
+
+There are two types of petición, determined by who creates it:
+
+- **JUD → Subdirector** — a JUD raises a request to their area's Subdirector
+- **Subdirector → Gestor** — a Subdirector raises a request to any Gestor in the system
+
+The recipient is stored in `id_destinatario` and the creator in `id_usuario_creador`. The system automatically resolves the Subdirector recipient for JUD peticiones using `obtener_subdirector_por_area(usuario_jud.id_area)`.
+
+---
+
+## Petición statuses
+
+| `id_estatus` | Name | Meaning |
+|:---:|---|---|
+| `1` | Pending | Petición submitted; waiting for the recipient to review |
+| `5` | Rechazado | Recipient clicked RECHAZADO / RECHAZADO; request denied |
+| `6` | Aprobado | Recipient clicked APROBADO / ACEPTADA; request approved |
+
+---
+
+## Petición fields
+
+| Field | Column | Required | Notes |
+|---|---|:---:|---|
+| Subject | `asunto` | ✓ | Brief description of the request |
+| Reference folio | `folio_peticion` | ✓ | Must be unique; duplicate folios are rejected with a clear error |
+| Full description | `descripcion` | ✓ | Detailed explanation of the request |
+| Attached file | `archivos_peticion` | ✓ | At least one file is mandatory — the service raises an exception if missing |
+| Recipient | `id_destinatario` | ✓ | Resolved automatically for JUDs; selected from a list for Subdirectores |
+
+<Note>
+  A file attachment is mandatory for every petición. If no file is provided, `ServicioOficio.procesar_peticion_jud` and `procesar_peticion_subdirector` both raise an exception — *"Es obligatorio adjuntar el archivo de la petición."* — and the transaction is rolled back. The petición record is not created without an accompanying file.
+</Note>
+
+---
+
+## Creating a petición
+
+<Tabs>
+  <Tab title="JUD petición (JUD → Subdirector)">
+    JUDs submit peticiones at **`/oficios/nueva_peticion`**.
+
+    <Steps>
+      <Step title="Open the petición form">
+        Navigate to `/oficios/nueva_peticion`. The form pre-fills the destination Subdirector's email (fetched by `obtener_correo_subdirector_por_area(current_user.id_area)`) so the JUD can confirm who will receive the request.
+      </Step>
+
+      <Step title="Fill in the form fields">
+        Complete the following fields:
+
+        - **Asunto** — subject of the request
+        - **Folio** — unique reference number for this petición
+        - **Descripción** — full details of what is being requested
+        - **Archivo** — the supporting document (PDF, DOC, DOCX, XLS, XLSX, JPG, JPEG, PNG)
+      </Step>
+
+      <Step title="Submit">
+        On POST, `ServicioOficio.procesar_peticion_jud` runs a transaction:
+
+        1. Resolves the active Subdirector of the JUD's area via `obtener_subdirector_por_area(usuario_jud.id_area)`. If none exists, submission fails.
+        2. Inserts the petición row via `crear_peticion_db` with `id_estatus = 1` and `id_destinatario` set to the Subdirector.
+        3. Saves the file to `static/uploads/peticiones/<id_peticion>/` and records it in `archivos_peticion`.
+        4. Commits the transaction.
+        5. After commit, sends an email notification to the Subdirector with the file attached (`enviar_notificacion_peticion_jud`).
+      </Step>
+
+      <Step title="Track the petición">
+        The JUD can see all their submitted peticiones on the JUD dashboard. The `Peticiones` KPI counter shows the total number of peticiones they have created (`obtener_peticiones_del_jud`). Each entry shows the folio, subject, status, and any response text (`respuesta_recibida`) once the Subdirector has acted.
+      </Step>
+    </Steps>
+  </Tab>
+
+  <Tab title="Subdirector petición (Subdirector → Gestor)">
+    Subdirectores submit peticiones at **`/oficios/nueva_peticion_subdirector`**.
+
+    <Steps>
+      <Step title="Open the petición form">
+        Navigate to `/oficios/nueva_peticion_subdirector`. The form shows a dropdown list of all active Gestores (fetched by `obtener_a_todos_los_gestores`), so the Subdirector selects their intended recipient.
+      </Step>
+
+      <Step title="Fill in the form fields">
+        Complete the following fields:
+
+        - **Asunto** — subject of the request
+        - **Folio** — unique reference number for this petición
+        - **Descripción** — full details of what is being requested
+        - **Gestor destinatario** — select the Gestor from the dropdown (`id_gestor_destinatario`)
+        - **Archivo** — the supporting document (PDF, DOC, DOCX, XLS, XLSX, JPG, JPEG, PNG)
+      </Step>
+
+      <Step title="Submit">
+        On POST, `ServicioOficio.procesar_peticion_subdirector` runs a transaction:
+
+        1. Inserts the petición row via `crear_peticion_db` with `id_estatus = 1` and `id_destinatario` set to the selected Gestor's `id_usuario`.
+        2. Saves the file to `static/uploads/peticiones/<id_peticion>/` and records it in `archivos_peticion`.
+        3. Commits the transaction.
+        4. After commit, resolves the Gestor's email via `obtener_correo_usuario_por_id(id_gestor)` and sends an email notification with the file attached (`enviar_notificacion_peticion_subdirector`).
+      </Step>
+
+      <Step title="Track the petición">
+        The Subdirector can see all their submitted peticiones on the Subdirector dashboard alongside the `Peticiones` KPI counter, which tracks incoming JUD peticiones. Submitted peticiones appear in the Gestor's dashboard view via `obtener_solicitudes_de_mis_subdirectores`.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+---
+
+## Responding to a petición
+
+The recipient (Subdirector for JUD peticiones, Gestor for Subdirector peticiones) reviews and decides on each incoming request.
+
+<Steps>
+  <Step title="Open the petición detail view">
+    From the dashboard, the recipient clicks on an incoming petición. The view is rendered by:
+
+    - `/oficios/responder_peticion_de_jud/<id_peticion>` — for Subdirectores reviewing JUD peticiones
+    - `/oficios/responder_peticion_subdirector/<id_peticion>` — for Gestores reviewing Subdirector peticiones
+
+    Both views call `obtener_detalles_peticion(id_peticion)` and `obtener_archivos_peticion(id_peticion)` to show the full petición details and all attached files.
+  </Step>
+
+  <Step title="Review the attached files">
+    The recipient can download and review the file(s) attached to the petición before making a decision. Files are stored under `static/uploads/peticiones/<id_peticion>/`.
+  </Step>
+
+  <Step title="Write a response and click APROBADO or RECHAZADO">
+    The recipient writes an optional response text (`respuesta_texto`) and clicks one of the action buttons:
+
+    **For Subdirector responding to JUD peticiones** (`/oficios/responder_peticion_de_jud`):
+
+    | Button label | `decision` value | `id_estatus` set |
+    |---|---|:---:|
+    | APROBADO | `"APROBADO"` | `6` |
+    | RECHAZADO | anything else | `5` |
+
+    **For Gestor responding to Subdirector peticiones** (`/oficios/responder_peticion_subdirector`):
+
+    | Button label | `decision` value | `id_estatus` set |
+    |---|---|:---:|
+    | ACEPTADA | `"ACEPTADA"` | `6` |
+    | RECHAZADO | `"RECHAZADO"` | `5` |
+
+    If neither valid button value is detected on the Gestor route, the route flashes a warning and redirects back without saving.
+
+    `registrar_respuesta_peticion_db` updates the `peticiones` row: sets `respuesta_recibida` to the response text and `id_estatus` to the new status.
+  </Step>
+
+  <Step title="Creator sees the outcome">
+    Once the status changes from `1` to `5` or `6`, the petición creator (JUD or Subdirector) sees the updated status and `respuesta_recibida` text in their dashboard petición list.
+  </Step>
+</Steps>
+
+---
+
+## File storage
+
+Petición files are stored in a separate path from oficio files to avoid collisions:
+
+```
+static/
+└── uploads/
+    ├── <id_oficio>/           ← oficio documents
+    └── peticiones/
+        └── <id_peticion>/     ← petición attachments
+```
+
+Each file is saved with a UUID prefix (e.g., `a3f7c201_solicitud.pdf`) to prevent overwrites if two files share the same original name.

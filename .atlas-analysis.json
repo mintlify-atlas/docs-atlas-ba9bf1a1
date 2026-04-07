@@ -1,0 +1,102 @@
+{
+  "projectType": "saas",
+  "projectName": "AMH Sistema de Oficios",
+  "projectDescription": "A Flask-based web application for managing official government documents (oficios) with role-based workflows for Gestores, Subdirectores, JUDs, and Administrators.",
+  "theme": "almond",
+  "primaryColor": "#1e40af",
+  "lightColor": "#dbeafe",
+  "darkColor": "#1e3a8a",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/roles-and-permissions",
+              "concepts/oficio-lifecycle",
+              "concepts/peticiones"
+            ]
+          },
+          {
+            "group": "User Guides",
+            "pages": [
+              "guides/gestor",
+              "guides/subdirector",
+              "guides/jud",
+              "guides/administrator"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/database-setup",
+              "configuration/email-setup"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "reference/architecture",
+              "reference/database-schema",
+              "reference/file-storage"
+            ]
+          },
+          {
+            "group": "Modules",
+            "pages": [
+              "reference/models",
+              "reference/services",
+              "reference/routes"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Role-based access control with four user roles: Gestor, Subdirector, JUD, and Administrator",
+    "Full oficio lifecycle management from creation to resolution with status tracking",
+    "Automatic PDF stamping with receipt acknowledgment (acuse de recibido) on document upload",
+    "Email notifications at each workflow step (new oficio, assignment to JUD, peticiones)",
+    "Peticiones workflow allowing JUDs and Subdirectores to make requests up the hierarchy",
+    "Per-role dashboards with KPI metrics (Enviados, En Revisión, Finalizados, etc.)",
+    "File attachment support for oficios and peticiones (PDF, DOC, Excel, images)",
+    "Sequential consecutive folio numbering system per year with concurrency safety",
+    "Admin panel for user management (create, soft-delete) and oficio oversight"
+  ],
+  "publicApiSurface": [
+    "GET/POST /auth/login — User authentication",
+    "GET /auth/logout — User logout",
+    "GET/POST /oficios/crear_oficio — Create a new oficio (Gestor only)",
+    "GET /oficios/panel_de_control — Role-based dashboard",
+    "GET /oficios/ver_detalles_oficio/<id> — View oficio details",
+    "GET/POST /oficios/reasignar_oficio/<id> — Review and assign oficio to JUD (Subdirector only)",
+    "POST /oficios/turnar_oficio_a_jud/<id> — Formally assign oficio to JUD",
+    "GET/POST /oficios/atender_oficio/<id> — Respond to an oficio (JUD only)",
+    "GET/POST /oficios/nueva_peticion — Create a JUD petition",
+    "GET/POST /oficios/nueva_peticion_subdirector — Create a Subdirector petition",
+    "GET/POST /oficios/responder_peticion_de_jud/<id> — Respond to JUD petition (Subdirector only)",
+    "GET/POST /oficios/responder_peticion_subdirector/<id> — Respond to Subdirector petition (Gestor only)",
+    "GET /oficios/api/subdirector/<id_area> — AJAX: get subdirector data by area",
+    "GET /admin/panel_de_administrador — Admin panel",
+    "POST /admin/crear_usuario — Create new user (Admin only)",
+    "POST /admin/eliminar_usuario/<id> — Soft-delete user (Admin only)",
+    "POST /admin/eliminar_oficio/<id> — Delete oficio and files (Admin only)"
+  ]
+}

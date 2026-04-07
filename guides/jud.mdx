@@ -1,0 +1,105 @@
+---
+title: "JUD guide"
+description: "How to process assigned oficios and create peticiones as a JUD (Jefe de Unidad Departamental)"
+---
+
+## Dashboard overview
+
+When you log in as a JUD, the dashboard displays three KPI cards and three data sections:
+
+<CardGroup cols={3}>
+  <Card title="Pendientes" icon="hourglass">
+    Oficios assigned to you with status 2 (En Proceso) that have no response date yet — your active workload.
+  </Card>
+  <Card title="Atendidos" icon="circle-check">
+    Oficios you have responded to, identified by a non-null `fecha_respuesta` field.
+  </Card>
+  <Card title="Peticiones" icon="paper-plane">
+    Total number of peticiones you have submitted to your Subdirector.
+  </Card>
+</CardGroup>
+
+The dashboard contains three sections:
+
+- **Pendientes** — table of oficios assigned to you that still need a response.
+- **Atendidos** — table of oficios you have already responded to.
+- **Mis Peticiones** — list of all peticiones you have created, with their current status and any response received.
+
+---
+
+## Processing an oficio
+
+<Steps>
+  <Step title="Open a pending oficio">
+    Click on any oficio in the **Pendientes** table to open the work screen at `/oficios/atender_oficio/{id}`. Only users with the JUD role (`id_rol = 3`) can access this route — others are redirected to their own dashboard.
+  </Step>
+  <Step title="Review the oficio details">
+    The screen shows the full oficio: both folios, subject, description, remitente, creation date, and the Subdirector's instructions (`instrucciones_subdirector`). Review all attached documents — main document and annexes — before writing your response.
+  </Step>
+  <Step title="Write your response">
+    Enter your response text in the **Texto de respuesta** field. This text is saved directly to the `texto_respuesta` column on the oficio record.
+  </Step>
+  <Step title="Attach a response document (optional)">
+    You may optionally upload a response file using the **Archivo** input. Accepted formats are PDF, DOC, DOCX, XLS, XLSX, JPG, JPEG, PNG. If provided, the file is stored in `static/uploads/{id_oficio}/` and recorded in `documentos_oficio` with type `RESPUESTA_OFICIAL`.
+  </Step>
+  <Step title="Submit the response">
+    Click submit. The system:
+
+    1. Updates the oficio: saves `texto_respuesta`, sets `fecha_respuesta = NOW()`, and changes `id_estatus_actual` to `4` (Finalizado).
+    2. Saves the response file (if any) to disk and records it in `documentos_oficio`.
+    3. Writes a history entry: `"Oficio atendido y finalizado por el JUD."` with status 4.
+
+    On success you are redirected to your dashboard. The oficio moves from the **Pendientes** table to the **Atendidos** table, and the Gestor's dashboard will reflect the updated status.
+  </Step>
+</Steps>
+
+---
+
+## Creating a petición to the Subdirector
+
+<Steps>
+  <Step title="Navigate to Nueva Petición">
+    Click **Nueva Petición** or navigate to `/oficios/nueva_peticion`. The form also shows the email address of your area's Subdirector for reference.
+  </Step>
+  <Step title="Fill in the form">
+    Complete all required fields:
+
+    | Field | Description |
+    |---|---|
+    | **Asunto** | Subject of the petición. |
+    | **Folio de petición** | Your reference number for this petición. Must be unique in the `peticiones` table — a duplicate folio returns an error without saving. |
+    | **Descripción** | Full description of your request. |
+  </Step>
+  <Step title="Attach a file">
+    Upload a supporting document using the **Archivo** input.
+
+    <Note>
+      Attaching a file is mandatory. If you submit the form without a file, the system raises a validation error (`"Es obligatorio adjuntar el archivo de la petición."`) and the petición is not created. The entire submission is rolled back — no record is written to the database.
+    </Note>
+  </Step>
+  <Step title="Submit">
+    The system:
+
+    1. Looks up the active Subdirector for your area — if none is found, the petición is not saved.
+    2. Saves the petición to the `peticiones` table with `id_estatus = 1` (Pendiente) and your Subdirector as `id_destinatario`.
+    3. Saves the file to `static/uploads/peticiones/{id_peticion}/`.
+    4. Sends an email notification to the Subdirector with the petición details and the attached file.
+
+    On success you are redirected to the dashboard.
+  </Step>
+</Steps>
+
+---
+
+## Viewing petición status
+
+All peticiones you have submitted appear in the **Mis Peticiones** section of your dashboard. Each entry shows:
+
+| Column | Description |
+|---|---|
+| Folio | The reference number you assigned when creating the petición. |
+| Asunto | The subject of the petición. |
+| Estatus | Current status: **Pendiente** (awaiting response), **Aprobado** (approved by Subdirector, `id_estatus = 6`), or **Rechazado** (rejected, `id_estatus = 5`). |
+| Respuesta recibida | The Subdirector's written response text, displayed once they have responded. |
+
+Click on any petición to open its detail view, which includes the full description and the attached file.

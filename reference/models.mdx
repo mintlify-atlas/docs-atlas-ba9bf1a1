@@ -1,0 +1,406 @@
+---
+title: "Models reference"
+description: "Data access functions and the Usuario model class in AMH Sistema de Oficios"
+---
+
+## Usuario class
+
+Defined in `app/models/usuario.py`. Inherits from Flask-Login's `UserMixin`, which provides the default implementations required by Flask-Login (`is_authenticated`, `is_active`, `is_anonymous`, `get_id`).
+
+```python
+class Usuario(UserMixin):
+    def __init__(
+        self,
+        id_usuario: int,
+        nombre_completo: str,
+        correo_electronico: str,
+        id_rol: int,
+        contrasena_hash: str,
+        id_area: int,
+    ): ...
+```
+
+The constructor maps to the `usuarios` table. Flask-Login requires the identity attribute to be named `id`, so `id_usuario` is stored as `self.id`.
+
+### Role properties
+
+Each property is a computed boolean derived from `id_rol`. Use these throughout the application instead of comparing `id_rol` directly.
+
+| Property | `id_rol` value | Description |
+|---|---|---|
+| `es_gestor` | `1` | Can create and send oficios |
+| `es_subdirector` | `2` | Reviews incoming oficios and assigns them to JUDs |
+| `es_jud` | `3` | Attends and responds to assigned oficios |
+| `es_administrador` | `4` | Manages users and can delete oficios |
+
+```python
+@property
+def es_gestor(self):
+    return self.id_rol == 1
+
+@property
+def es_subdirector(self):
+    return self.id_rol == 2
+
+@property
+def es_jud(self):
+    return self.id_rol == 3
+
+@property
+def es_administrador(self):
+    return self.id_rol == 4
+```
+
+---
+
+## Oficio model functions
+
+Defined in `app/models/oficio.py`. These functions are the only layer that executes SQL against the database.
+
+<Note>
+  Functions that accept a `cursor` parameter **do not manage their own connection or transaction**. They must be called from inside a `with conexion.cursor() as cursor:` block, where the calling service is responsible for `conexion.commit()` and `conexion.rollback()`. Functions without a `cursor` parameter open their own connection and manage it internally.
+</Note>
+
+### crear_oficio_db
+
+```python
+def crear_oficio_db(cursor, datos) -> int
+```
+
+Inserts a new oficio header row into the `oficios` table. Sets `id_estatus_actual = 1` (En Revisión) automatically.
+
+**Parameters:**
+
+- `cursor` — Active transaction cursor from the service layer
+- `datos` — Dict with keys: `folio`, `folio_consecutivo`, `asunto`, `descripcion_solicitud`, `id_creador`, `id_asignado`, `id_area`
+
+**Returns:** `cursor.lastrowid` — the auto-generated `id_oficio` (int).
+
+---
+
+### guardar_documento_db
+
+```python
+def guardar_documento_db(cursor, id_oficio, id_usuario, nombre_real, ruta, tipo) -> None
+```
+
+Inserts a file record into `documentos_oficio`. Extracts the file extension from `nombre_real` automatically.
+
+**Parameters:**
+
+- `cursor` — Active transaction cursor
+- `id_oficio` — ID of the parent oficio
+- `id_usuario` — ID of the user who uploaded the file
+- `nombre_real` — Original filename (e.g. `"solicitud.pdf"`)
+- `ruta` — Relative storage path (e.g. `"uploads/45/abc123_solicitud.pdf"`)
+- `tipo` — ENUM value: `"SOLICITUD"`, `"ANEXO_SOLICITUD"`, or `"RESPUESTA_OFICIAL"`
+
+---
+
+### marcar_oficio_como_visto
+
+```python
+def marcar_oficio_como_visto(id_oficio, id_usuario) -> None
+```
+
+Sets `fecha_lectura = NOW()` on the oficio row, but only if it is `NULL` and the given user is the assigned recipient. Manages its own connection. Silently logs errors without raising.
+
+---
+
+### registrar_historial_db
+
+```python
+def registrar_historial_db(cursor, id_oficio, id_usuario, id_estatus_nuevo, comentario) -> None
+```
+
+Inserts an audit entry into `historial_oficios` with `fecha_movimiento = NOW()`.
+
+**Parameters:**
+
+- `cursor` — Active transaction cursor
+- `id_oficio` — Target oficio
+- `id_usuario` — User who performed the action
+- `id_estatus_nuevo` — New status ID (int)
+- `comentario` — Human-readable description of the action
+
+---
+
+### obtener_documentos_de_un_oficio
+
+```python
+def obtener_documentos_de_un_oficio(id_oficio) -> list[dict]
+```
+
+Returns all file records attached to a given oficio.
+
+**Returns:** List of dicts with keys: `id_usuario_subio`, `nombre_archivo_original`, `ruta_almacenamiento`, `tipo_documento`, `fecha_subida`.
+
+---
+
+### obtenter_los_detalles_de_un_oficio
+
+```python
+def obtenter_los_detalles_de_un_oficio(id_oficio) -> dict | None
+```
+
+Returns a single row with full oficio details, joining `usuarios` (remitente and destinatario) and `cat_estatus`.
+
+**Returns:** Dict with keys: `id_oficio`, `fecha_creacion`, `remitente`, `folio_interno`, `folio_consecutivo`, `asunto`, `descripcion_solicitud`, `fecha_respuesta`, `texto_respuesta`, `fecha_recepcion`, `fecha_lectura`, `instrucciones_subdirector`, `destinatario`, `estatus`. Returns `None` if the oficio does not exist.
+
+<Note>
+  Note the typo in the function name: `obtenter_` (with an extra `t`). This is the actual name in the codebase and must be imported exactly as written.
+</Note>
+
+---
+
+### obtener_historial_de_un_oficio
+
+```python
+def obtener_historial_de_un_oficio(id_oficio) -> list[dict]
+```
+
+Returns the full audit trail for an oficio, ordered by `fecha_movimiento DESC`.
+
+**Returns:** List of dicts with keys: `id_historial`, `id_oficio`, `usuario_accion`, `nuevo_estatus`, `estatus_anterior`, `fecha_movimiento`.
+
+---
+
+### obtener_oficios_del_gestor
+
+```python
+def obtener_oficios_del_gestor(id_usuario_gestor) -> list[dict]
+```
+
+Returns all oficios created by a given gestor, with resolved names for the assignee, status, and area.
+
+**Returns:** List of dicts with keys: `id_oficio`, `folio_consecutivo`, `folio_interno`, `asunto`, `texto_respuesta`, `fecha_respuesta`, `id_usuario_creador`, `fecha_creacion`, `id_usuario_asignado`, `id_estatus_actual`, `destinatario`, `estatus`, `area_destinataria`. Ordered by `fecha_creacion DESC`.
+
+---
+
+### obtener_kpis_gestor
+
+```python
+def obtener_kpis_gestor(id_usuario) -> dict
+```
+
+Runs three COUNT queries to compute dashboard KPIs for a gestor.
+
+**Returns:**
+
+```python
+{
+    "Enviados": int,      # All oficios created by this user
+    "En Revisión": int,   # Oficios with id_estatus_actual IN (1, 3)
+    "Finalizados": int,   # Oficios with id_estatus_actual = 4
+}
+```
+
+---
+
+### obtener_bandeja_entrada_subdirector
+
+```python
+def obtener_bandeja_entrada_subdirector(id_usuario) -> list[dict]
+```
+
+Returns the subdirector's inbox: oficios assigned to them with `id_estatus_actual = 1`, ordered by `fecha_creacion DESC`.
+
+**Returns:** List of dicts with keys: `id_oficio`, `folio_consecutivo`, `remitente`, `fecha_creacion`, `folio_interno`, `asunto`, `descripcion_solicitud`, `estatus`.
+
+---
+
+### obtener_kpis_subdirector
+
+```python
+def obtener_kpis_subdirector(id_usuario, id_area) -> dict
+```
+
+Computes dashboard KPIs for a subdirector.
+
+**Returns:**
+
+```python
+{
+    "Recibidos": int,   # All oficios assigned to this area
+    "Por Asignar": int, # Oficios assigned to this subdirector with id_estatus_actual = 1
+    "Peticiones": int,  # Pending petitions (id_estatus = 1) from JUDs directed to this subdirector
+}
+```
+
+---
+
+### obtener_kpis_jud
+
+```python
+def obtener_kpis_jud(id_usuario) -> dict
+```
+
+Computes dashboard KPIs for a JUD using a single aggregation query for oficio counts plus a separate petition count query.
+
+**Returns:**
+
+```python
+{
+    "Pendientes": int,  # Oficios assigned to JUD with id_estatus_actual = 2
+    "Atendidos": int,   # Oficios with id_estatus_actual IN (3, 4)
+    "Peticiones": int,  # All petitions created by this JUD
+}
+```
+
+---
+
+### asignar_oficio_a_jud_db
+
+```python
+def asignar_oficio_a_jud_db(id_oficio, id_jud, id_subdirector, instrucciones) -> bool
+```
+
+Manages its own transaction. Updates the oficio to assign it to a JUD (`id_estatus_actual = 2`, clears `fecha_lectura`), then calls `registrar_historial_db` within the same transaction.
+
+**Returns:** `True` on success, `False` if an exception occurred (with rollback).
+
+---
+
+### actualizar_respuesta_oficio_db
+
+```python
+def actualizar_respuesta_oficio_db(cursor, id_oficio, texto_respuesta) -> None
+```
+
+Sets `texto_respuesta`, `fecha_respuesta = NOW()`, and `id_estatus_actual = 4` (Finalizado) on the oficio. Must be called within a service-managed transaction.
+
+---
+
+### eliminar_oficio_db
+
+```python
+def eliminar_oficio_db(cursor, id_oficio) -> None
+```
+
+Hard-deletes an oficio and its dependent records in the correct order to satisfy foreign key constraints. Must be called within a service-managed transaction.
+
+**Cascade order:**
+1. `DELETE FROM historial_oficios WHERE id_oficio = ?`
+2. `DELETE FROM documentos_oficio WHERE id_oficio = ?`
+3. `DELETE FROM oficios WHERE id_oficio = ?`
+
+<Note>
+  Physical files on disk are **not** removed by this function. The service layer (`ServicioOficio.eliminar_oficio_total`) is responsible for deleting the `static/uploads/{id_oficio}/` directory after committing the DB transaction.
+</Note>
+
+---
+
+### crear_peticion_db
+
+```python
+def crear_peticion_db(cursor, datos) -> int
+```
+
+Inserts a new petition into the `peticiones` table with `id_estatus = 1`.
+
+**Parameters:**
+
+- `cursor` — Active transaction cursor
+- `datos` — Dict with keys: `asunto`, `folio`, `descripcion`, `id_creador`, `id_destinatario`
+
+**Returns:** `cursor.lastrowid` — the auto-generated `id_peticion` (int).
+
+---
+
+### registrar_respuesta_peticion_db
+
+```python
+def registrar_respuesta_peticion_db(id_peticion, texto_respuesta, id_estatus_final) -> None
+```
+
+Updates the `respuesta_recibida` and `id_estatus` columns on a petition. Manages its own connection and commit. Raises the exception on failure after rollback.
+
+**Parameters:**
+
+- `id_peticion` — ID of the petition to update
+- `texto_respuesta` — Response text from the subdirector or gestor
+- `id_estatus_final` — `5` (Rechazado) or `6` (Aprobado)
+
+---
+
+## Usuario model functions
+
+### crear_nuevo_usuario
+
+```python
+def crear_nuevo_usuario(datos) -> bool
+```
+
+Hashes the plain-text password in `datos["contrasena_hash"]` using `werkzeug.security.generate_password_hash` before insertion. Sets `activo = 1`.
+
+**Parameters:** Dict with keys: `nombre_completo`, `correo_electronico`, `contrasena_hash` (plain text), `puesto`, `id_rol`, `id_area`.
+
+**Returns:** `True` on success, `False` on any exception (with rollback).
+
+---
+
+### eliminar_usuario
+
+```python
+def eliminar_usuario(id_usuario) -> bool
+```
+
+Performs a soft delete by setting `activo = 0`. The user record is preserved to maintain referential integrity in `historial_oficios` and other tables.
+
+**Returns:** `True` on success, `False` on any exception (with rollback).
+
+---
+
+### obtener_todos_los_usuarios
+
+```python
+def obtener_todos_los_usuarios() -> list[dict]
+```
+
+Returns all active users (`activo = 1`) with their resolved role name and area name via JOINs.
+
+**Returns:** List of dicts with keys: `id_usuario`, `nombre_completo`, `correo_electronico`, `puesto`, `rol`, `area`.
+
+---
+
+### buscar_usuario_por_email
+
+```python
+def buscar_usuario_por_email(email: str) -> Optional[Usuario]
+```
+
+Queries `WHERE correo_electronico = ? AND activo = 1`. Returns a fully constructed `Usuario` object or `None` if not found or inactive.
+
+---
+
+### buscar_usuario_por_id
+
+```python
+def buscar_usuario_por_id(id_usuario: int) -> Optional[Usuario]
+```
+
+Same as `buscar_usuario_por_email` but queries by primary key. Returns `None` for inactive users.
+
+---
+
+### obtener_juds_por_area
+
+```python
+def obtener_juds_por_area(id_area) -> list[dict]
+```
+
+Returns all active users with `id_rol = 3` belonging to the given area.
+
+**Returns:** List of dicts with keys: `id_usuario`, `nombre_completo`, `correo_electronico`, `puesto`, `activo`.
+
+---
+
+### obtener_subdirector_por_area
+
+```python
+def obtener_subdirector_por_area(id_area) -> dict | None
+```
+
+Returns the first active subdirector (`id_rol = 2`, `activo = 1`) in the given area, or `None` if none is found. Used by `ServicioOficio` to resolve the initial assignee when creating an oficio.
+
+**Returns:** Dict with keys: `id_usuario`, `nombre_completo`, `puesto`, `correo_electronico`.

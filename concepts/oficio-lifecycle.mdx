@@ -1,0 +1,145 @@
+---
+title: "Oficio lifecycle"
+description: "How an oficio moves through the system from creation to resolution"
+---
+
+## Statuses
+
+Each oficio has a single `id_estatus_actual` column that references the `cat_estatus` catalog. The four statuses an oficio can hold are:
+
+| `id_estatus` | Name | Meaning |
+|:---:|---|---|
+| `1` | En Revisión | Oficio created; waiting for the Subdirector to assign it to a JUD |
+| `2` | En Proceso | Subdirector has assigned the oficio to a JUD; JUD must respond |
+| `3` | En Atención | Intermediate state present in the `cat_estatus` catalog; referenced in KPI range queries |
+| `4` | Finalizado | JUD has submitted their response; oficio is closed |
+| `5` | Rechazado | Used for peticiones only — recipient rejected the request |
+| `6` | Aprobado | Used for peticiones only — recipient approved the request |
+
+<Note>
+  Status `3` appears in KPI range queries: the Gestor's "En Revisión" KPI counts oficios with `id_estatus_actual IN (1, 3)`, and the JUD's "Atendidos" KPI counts oficios with `id_estatus_actual IN (3, 4)`. The main oficio workflow transitions directly from status `2` → `4` when `actualizar_respuesta_oficio_db` is called. Statuses `5` and `6` are used exclusively for peticiones, not oficios.
+</Note>
+
+---
+
+## Lifecycle flow
+
+<Steps>
+  <Step title="Gestor creates the oficio">
+    The Gestor fills in the form at `/oficios/crear_oficio`. Required fields are:
+
+    - `folio` — manual reference number supplied by the Gestor
+    - `id_area` — the destination organizational area
+    - `asunto` — subject of the oficio
+    - `descripcion_solicitud` — full description of the request
+    - `archivo` — main document file (PDF, DOC, DOCX, XLS, XLSX, JPG, JPEG, PNG)
+    - `anexos` — optional additional files
+    - `correo_adicional` — optional external email to copy on the notification
+
+    `ServicioOficio.procesar_nuevo_oficio` coordinates the transaction:
+
+    1. Looks up the active Subdirector of the chosen area via `obtener_subdirector_por_area(id_area)`. If none exists, the operation is aborted.
+    2. Generates the next sequential folio using `_obtener_siguiente_folio`, which atomically increments the `folios_contador` table for the current year.
+    3. Inserts the oficio record via `crear_oficio_db` with `id_estatus_actual = 1` and `id_usuario_asignado` set to the Subdirector's `id_usuario`.
+    4. Saves the main file with type `SOLICITUD` and each annex with type `ANEXO_SOLICITUD`.
+    5. Writes the first `historial_oficios` entry: *"Oficio creado y turnado al Subdirector."*
+    6. Commits the transaction, then sends an email notification to the Subdirector (and the optional external address) with all attached files.
+
+    **Resulting status: `1` (En Revisión)**
+  </Step>
+
+  <Step title="Subdirector reviews and assigns to a JUD">
+    The Subdirector sees the oficio in their inbox (status `1`, `id_usuario_asignado = subdirector`). They open the oficio at `/oficios/reasignar_oficio/<id_oficio>`, which also records `fecha_lectura` on the first open.
+
+    From that view they select one of the JUDs in their area and optionally write `instrucciones_subdirector`. Submitting the assignment form calls `asignar_oficio_a_jud_db`, which:
+
+    1. Updates the `oficios` row: sets `id_usuario_asignado` to the chosen JUD's `id_usuario`, `id_estatus_actual = 2`, clears `fecha_lectura`, and saves the instructions.
+    2. Inserts a historial entry: *"Oficio asignado al JUD para su atención."*
+    3. Commits, then sends an email to the JUD with all oficio files attached.
+
+    **Resulting status: `2` (En Proceso)**
+  </Step>
+
+  <Step title="JUD processes and responds">
+    The JUD sees the pending oficio in their dashboard. They navigate to `/oficios/atender_oficio/<id_oficio>` and submit:
+
+    - `texto_respuesta` — written response text
+    - `archivo` (optional) — an official response document, stored with type `RESPUESTA_OFICIAL`
+
+    `ServicioOficio.procesar_respuesta_jud` runs inside a transaction:
+
+    1. Calls `actualizar_respuesta_oficio_db`, which sets `texto_respuesta`, `fecha_respuesta = NOW()`, and `id_estatus_actual = 4`.
+    2. If a file was provided, saves it to `static/uploads/<id_oficio>/` and records it in `documentos_oficio` as `RESPUESTA_OFICIAL`.
+    3. Inserts a historial entry: *"Oficio atendido y finalizado por el JUD."*
+
+    **Resulting status: `4` (Finalizado)**
+  </Step>
+
+  <Step title="Gestor views the final response">
+    The Gestor's dashboard lists all their oficios. An oficio with status `4` shows `fecha_respuesta` and `texto_respuesta`. The Gestor can open `/oficios/ver_detalles_oficio/<id_oficio>` to read the full details, download all attached files, and review the complete audit trail from `historial_oficios`.
+  </Step>
+</Steps>
+
+---
+
+## Status transition diagram
+
+```
+Gestor submits oficio
+        │
+        ▼
+  ┌───────────┐
+  │ status 1  │  En Revisión — assigned to Subdirector
+  └───────────┘
+        │  Subdirector calls asignar_oficio_a_jud_db()
+        ▼
+  ┌───────────┐
+  │ status 2  │  En Proceso — assigned to JUD
+  └───────────┘
+        │  JUD calls actualizar_respuesta_oficio_db()
+        ▼
+  ┌───────────┐
+  │ status 4  │  Finalizado — response recorded
+  └───────────┘
+```
+
+---
+
+## PDF acuse de recibido stamp
+
+<Note>
+  When the Gestor uploads a PDF as the main document (`SOLICITUD`), the service automatically stamps it with an *acuse de recibido* before saving. The stamp is applied by `estampar_acuse_en_disco` (from `app/utils/pdf_tools.py`) and embeds the Gestor's full name, the consecutive folio number, and the creation timestamp. The file is overwritten in-place so the stored copy is always the stamped version.
+</Note>
+
+Only PDF files receive the stamp. DOC, DOCX, XLS, and image files are stored as-is.
+
+---
+
+## File attachment types
+
+Attachments are stored in `documentos_oficio` with a `tipo_documento` ENUM that describes the role of each file:
+
+| `tipo_documento` | Uploaded by | When |
+|---|---|---|
+| `SOLICITUD` | Gestor | At oficio creation — the main document |
+| `ANEXO_SOLICITUD` | Gestor | At oficio creation — supplementary annexes |
+| `RESPUESTA_OFICIAL` | JUD | When responding to the oficio |
+
+All physical files are saved under `static/uploads/<id_oficio>/` with a UUID prefix to prevent filename collisions.
+
+---
+
+## Consecutive folio system
+
+Every oficio gets a `folio_consecutivo` that is sequential per calendar year. The `folios_contador` table has one row per year (`anio`, `ultimo_folio`). The `_obtener_siguiente_folio` method issues an atomic `UPDATE ... SET ultimo_folio = ultimo_folio + 1` before reading the new value back, ensuring no two concurrent requests can claim the same number. If no row exists for the current year, it is created with `ultimo_folio = 1`.
+
+---
+
+## Email notifications
+
+| Trigger | Recipient(s) |
+|---|---|
+| Gestor creates oficio | Subdirector of the destination area; optional external address |
+| Subdirector assigns to JUD | JUD (with all oficio files attached) |
+| JUD creates petición | Subdirector of the JUD's area |
+| Subdirector creates petición | Selected Gestor |

@@ -1,0 +1,167 @@
+---
+title: "File storage"
+description: "How AMH Sistema de Oficios stores, organizes, and serves uploaded files"
+---
+
+## Storage location
+
+All uploaded files are written to `app/static/uploads/` relative to the Flask application root. The absolute path is computed at runtime using `current_app.root_path`:
+
+```python
+carpeta_destino = os.path.join(
+    current_app.root_path, "static", "uploads", str(id_oficio)
+)
+```
+
+Because the files live inside `static/`, Flask can serve them directly without a custom route.
+
+<Warning>
+  The `app/static/uploads/` directory must be writable by the process running the Flask application. If the directory does not exist or has incorrect permissions, all file upload operations will raise an `OSError` and the enclosing transaction will be rolled back.
+</Warning>
+
+## Directory structure
+
+Each oficio and petición gets its own subdirectory, created with `os.makedirs(exist_ok=True)` at upload time:
+
+```text
+app/static/uploads/
+├── {id_oficio}/                        # One directory per oficio
+│   ├── {uuid_prefix}_{filename}.pdf    # Main SOLICITUD document (may be stamped)
+│   ├── {uuid_prefix}_{filename}.docx   # ANEXO_SOLICITUD file
+│   └── {uuid_prefix}_{filename}.pdf    # RESPUESTA_OFICIAL from JUD
+└── peticiones/
+    └── {id_peticion}/                  # One directory per petición
+        └── {uuid_prefix}_{filename}.pdf
+```
+
+The `id_oficio` and `id_peticion` values used as directory names are the auto-incremented primary keys returned by MySQL after the `INSERT` — so directories are created only after the row exists in the database.
+
+## Filename sanitization
+
+Every uploaded file goes through two sanitization steps before being written to disk:
+
+```python
+# From ServicioOficio._guardar_archivo_en_disco()
+nombre_seguro = secure_filename(archivo.filename)
+nombre_unico = f"{uuid.uuid4().hex[:8]}_{nombre_seguro}"
+```
+
+1. **`secure_filename()`** (Werkzeug) — strips path separators, null bytes, and other dangerous characters from the original filename.
+2. **UUID prefix** — 8 hex characters from `uuid.uuid4().hex[:8]` are prepended to the sanitized name (e.g., `a1b2c3d4_solicitud.pdf`). This prevents collisions when two files with the same name are uploaded to the same oficio directory.
+
+The path stored in `documentos_oficio.ruta_almacenamiento` is the relative path from `static/`:
+
+```python
+ruta_bd = f"uploads/{id_oficio}/{nombre_unico}"
+```
+
+For petition files, the equivalent logic stores:
+
+```python
+ruta_bd = f"uploads/peticiones/{id_peticion}/{nombre_unico}"
+```
+
+## Allowed file types
+
+Extensions are validated against a hardcoded set before any file is written to disk:
+
+```python
+# From app/services/oficio_service.py
+EXTENSIONES_PERMITIDAS = {"pdf", "doc", "docx", "xls", "xlsx", "jpg", "jpeg", "png"}
+
+def _archivo_es_permitido(self, nombre_archivo):
+    return (
+        "." in nombre_archivo
+        and nombre_archivo.rsplit(".", 1)[1].lower() in EXTENSIONES_PERMITIDAS
+    )
+```
+
+If the extension check fails, an exception is raised inside the open transaction and `conexion.rollback()` is called — no partial data is saved and no file is written.
+
+## PDF auto-stamping
+
+When the main oficio document (`tipo_documento = SOLICITUD`) is a PDF, the system automatically stamps the first page with an "ACUSE DE RECIBIDO - SISTEMA" seal immediately after saving the file to disk.
+
+The stamp is generated in memory with ReportLab and merged onto the existing first page using pypdf's `merge_page()`:
+
+```python
+# From app/utils/pdf_tools.py
+def crear_sello_acuse(persona_recibe_doc, folio_consecutivo, fecha_hora):
+    packet = io.BytesIO()
+    c = canvas.Canvas(packet, pagesize=letter)
+
+    x, y = 50, 750
+
+    # Blue border box: x=40, y_bottom=700, width=350, height=90
+    c.setStrokeColor(blue)
+    c.setLineWidth(1)
+    c.rect(x - 10, y - 50, 350, 90, stroke=1, fill=0)
+
+    c.setFillColor(blue)
+    c.setFont("Helvetica-Bold", 15)
+    c.drawString(x, y + 20, "ACUSE DE RECIBIDO - SISTEMA")
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(x, y + 0,  f"Persona que recibe: {persona_recibe_doc}")
+    c.drawString(x, y - 20, f"Folio: {folio_consecutivo}")
+    c.drawString(x, y - 40, f"Fecha recibido: {fecha_hora}")
+
+    c.save()
+    packet.seek(0)
+    return packet
+```
+
+The stamp data passed in at call time:
+
+| Stamp field | Source |
+|-------------|--------|
+| Persona que recibe | `usuario_gestor.nombre_completo` (the Gestor who submitted the oficio) |
+| Folio | `folio_consecutivo` (the auto-generated sequential number) |
+| Fecha recibido | `datetime.now().strftime("%Y-%m-%d %H:%M:%S")` |
+
+<Note>
+  Stamping is an in-place overwrite. `estampar_acuse_en_disco()` reads the uploaded PDF from disk, merges the stamp overlay onto page 0, then writes the result back to the same file path with `open(ruta_fisica_pdf, "wb")`. The original unmodified PDF is not retained. If stamping fails, a warning is logged but the transaction proceeds — the file is still saved and the database records are still committed.
+</Note>
+
+## Document types
+
+The `tipo_documento` ENUM in `documentos_oficio` categorizes every file:
+
+| Value | Set by | Description |
+|-------|--------|-------------|
+| `SOLICITUD` | `procesar_nuevo_oficio()` | Main request document uploaded by the Gestor. PDF files in this category are auto-stamped. |
+| `ANEXO_SOLICITUD` | `procesar_nuevo_oficio()` | Additional attachments uploaded alongside the main document. Not stamped. |
+| `RESPUESTA_OFICIAL` | `procesar_respuesta_jud()` | Response file uploaded by the JUD when finalizing the oficio. |
+
+## File deletion
+
+When an Administrator deletes an oficio, `ServicioOficio.eliminar_oficio_total()` removes the database records and the entire upload directory in a single operation:
+
+```python
+# From app/services/oficio_service.py
+def eliminar_oficio_total(self, id_oficio):
+    conexion = obtener_conexion()
+    conexion.begin()
+    try:
+        with conexion.cursor() as cursor:
+            eliminar_oficio_db(cursor, id_oficio)  # DELETE historial, documentos, oficio
+
+        carpeta_destino = os.path.join(
+            current_app.root_path, "static", "uploads", str(id_oficio)
+        )
+        if os.path.exists(carpeta_destino):
+            shutil.rmtree(carpeta_destino)  # Removes directory and all contents
+
+        conexion.commit()
+        return True, "Oficio y archivos eliminados correctamente."
+    except Exception as e:
+        conexion.rollback()
+        return False, f"Error al eliminar oficio: {str(e)}"
+```
+
+Petition file directories (`static/uploads/peticiones/{id_peticion}/`) are **not** automatically cleaned up when a petition is deleted or resolved.
+
+## Email attachments
+
+After a successful commit, `enviar_notificacion_de_nuevo_oficio()` reads saved files from disk and attaches them to the outgoing email. Files are read in full and passed to `msg.attach()` with their detected MIME type. There is no size limit enforced — large files are included in their entirety in the email payload.
+
+If email dispatch fails, the exception is caught and logged but does not trigger a database rollback. The oficio is already committed and remains valid; only the notification is lost.

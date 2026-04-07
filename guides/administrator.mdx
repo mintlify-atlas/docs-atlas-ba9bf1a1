@@ -1,0 +1,105 @@
+---
+title: "Administrator guide"
+description: "How to manage users, monitor oficios, and maintain the system as an Administrator"
+---
+
+## Admin panel overview
+
+Administrators are users with `id_rol = 4`. Logging in as an Administrator redirects directly to the admin panel at `/admin/panel_de_administrador`. Attempting to access any `/admin/*` route as a non-administrator role redirects to the login page.
+
+The admin panel contains two main tables:
+
+- **Usuarios** — all currently active users (`activo = 1`), showing full name, email, position, role, and area.
+- **Oficios** — the 100 most recently created oficios (ordered by `fecha_creacion DESC`), showing internal folio, subject, creator, status, and creation date.
+
+---
+
+## Creating a user
+
+<Steps>
+  <Step title="Open the user creation form">
+    Click **Crear Usuario** in the admin panel. The form is rendered inline on the same panel page — submission posts to `/admin/crear_usuario`.
+  </Step>
+  <Step title="Fill in the user fields">
+    Complete all required fields:
+
+    | Field | Description |
+    |---|---|
+    | **Nombre completo** | The user's full name, stored in `nombre_completo`. |
+    | **Correo electrónico** | Login email. Must be unique — a duplicate email returns an error. |
+    | **Contraseña** | Plain-text password entered in the form. The system hashes it automatically using Werkzeug's `generate_password_hash` before writing to the database. The plain-text value is never stored. |
+    | **Puesto** | The user's job title (e.g., `Jefe de Departamento`). |
+    | **Rol** | Select from the roles defined in `cat_roles`: Gestor (`id_rol = 1`), Subdirector (`id_rol = 2`), JUD (`id_rol = 3`), Administrador (`id_rol = 4`). |
+    | **Área** | Select the area from `cat_areas`. This determines which Subdirector receives oficios from this Gestor, or which JUDs a Subdirector can assign to. |
+  </Step>
+  <Step title="Submit">
+    Click the submit button. If both Rol and Área are selected and the email is not a duplicate, the user is created with `activo = 1`. You are redirected back to the admin panel with a confirmation message.
+
+    If the email already exists in the database, you will see: `"Error al crear el usuario (¿Correo duplicado?)."`
+  </Step>
+</Steps>
+
+---
+
+## Deactivating a user
+
+Click the delete button next to any user in the usuarios table. The system posts to `/admin/eliminar_usuario/{id_usuario}`.
+
+<Note>
+  User deletion is a **soft delete**. The system runs `UPDATE usuarios SET activo = 0 WHERE id_usuario = %s` — the user record is not removed from the database. All historical records (oficios they created, history entries, peticiones) remain intact and correctly attributed. The user will no longer appear in the usuarios table (which only queries `activo = 1`) and will not be able to log in.
+</Note>
+
+---
+
+## Monitoring and deleting oficios
+
+The **Oficios** table in the admin panel shows the 100 most recent oficios with: internal folio (`folio_interno`), subject, creator name, current status, and creation date.
+
+To permanently delete an oficio, click its delete button. This posts to `/admin/eliminar_oficio/{id_oficio}` and calls `ServicioOficio.eliminar_oficio_total`.
+
+<Warning>
+  Oficio deletion is **permanent and irreversible**. The operation removes:
+
+  1. All rows in `historial_oficios` for the oficio.
+  2. All rows in `documentos_oficio` for the oficio.
+  3. The oficio row itself from `oficios`.
+  4. The entire physical folder `static/uploads/{id_oficio}/` and all files inside it (using `shutil.rmtree`).
+
+  There is no soft delete for oficios. Once deleted, the oficio record and its files cannot be recovered.
+</Warning>
+
+---
+
+## Using the password hash tool
+
+During initial setup or when you need to insert users directly into the database (bypassing the admin panel UI), the `crear_usuario.py` script at the project root generates a Werkzeug-compatible password hash:
+
+```bash
+python crear_usuario.py
+```
+
+The script outputs a hash string in the format `scrypt:...` that you can insert directly into the `contrasena_hash` column of the `usuarios` table. The script also verifies the hash against the plain-text password using `check_password_hash`.
+
+To generate a hash for a different password, edit the `password_plano` variable in the script before running it.
+
+```python
+password_plano = "your_password_here"
+password_hash = generate_password_hash(password_plano)
+```
+
+<Note>
+  The admin panel's **Crear Usuario** form hashes passwords automatically — you only need `crear_usuario.py` for direct database insertions during setup or migrations.
+</Note>
+
+---
+
+## Access control reference
+
+| Role | `id_rol` | Admin panel access |
+|---|---|---|
+| Gestor | 1 | No — redirected to login |
+| Subdirector | 2 | No — redirected to login |
+| JUD | 3 | No — redirected to login |
+| Administrador | 4 | Yes — full access |
+
+The `es_administrador` property on the `Usuario` model returns `True` only when `id_rol == 4`. Every admin route checks this property at the start and redirects to `auth.login` if the check fails.

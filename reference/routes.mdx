@@ -1,0 +1,105 @@
+---
+title: "Routes reference"
+description: "All HTTP routes in AMH Sistema de Oficios organized by Blueprint"
+---
+
+All routes except `/auth/login` are protected with Flask-Login's `@login_required` decorator. Unauthenticated requests are redirected to the login page. Role enforcement is applied inside each handler using `current_user.es_*` property checks — unauthorized users are redirected to the dashboard or login page with a flash message rather than receiving an HTTP 403.
+
+---
+
+## Root
+
+| Method | Path | Access | Description |
+|--------|------|--------|-------------|
+| GET | `/` | Any | Redirects authenticated users to `/oficios/panel_de_control`, unauthenticated users to `/auth/login` |
+
+---
+
+## Auth Blueprint
+
+**Prefix:** `/auth`  
+**Module:** `app/routes/auth.py`  
+**Blueprint name:** `auth`
+
+| Method | Path | Access | Description |
+|--------|------|--------|-------------|
+| GET, POST | `/auth/login` | Public | Renders the login form (GET) or processes credentials (POST). On success calls `login_user()` and redirects to the dashboard. On failure flashes an error and re-renders the form. |
+| GET | `/auth/logout` | Logged in | Calls `logout_user()` and redirects to `/auth/login`. |
+
+---
+
+## Oficios Blueprint
+
+**Prefix:** `/oficios`  
+**Module:** `app/routes/oficios.py`  
+**Blueprint name:** `oficios`
+
+| Method | Path | Access | Description |
+|--------|------|--------|-------------|
+| GET | `/oficios/panel_de_control` | Logged in | Role-based dashboard. Renders `dashboard_gestor.html`, `dashboard_subdirector.html`, or `dashboard_jud.html` depending on `current_user.id_rol`. Administrators are redirected to `/admin/panel_de_administrador`. |
+| GET, POST | `/oficios/crear_oficio` | Gestor only | GET renders the oficio creation form with the list of active areas. POST delegates to `ServicioOficio.procesar_nuevo_oficio`. Non-gestores are redirected to the dashboard. |
+| GET | `/oficios/ver_detalles_oficio/<id_oficio>` | Logged in | Renders the full details view for a single oficio, including attached documents and the audit history. |
+| GET | `/oficios/ver_detalles_peticion/<id_peticion>` | Logged in | Renders the details view for a single petition, including attached files. |
+| GET, POST | `/oficios/reasignar_oficio/<id_oficio>` | Subdirector only | GET renders the review-and-assign form, marks the oficio as read (`marcar_oficio_como_visto`), and loads the JUDs in the subdirector's area. POST form submission is handled by the separate `turnar_oficio_a_jud` route. Non-subdirectores are redirected to the dashboard. |
+| POST | `/oficios/turnar_oficio_a_jud/<id_oficio>` | Subdirector only | Calls `asignar_oficio_a_jud_db` to assign the oficio to the selected JUD (estatus → 2), then sends a notification email to the JUD with all attached files. Redirects to the dashboard on completion. |
+| GET, POST | `/oficios/atender_oficio/<id_oficio>` | JUD only | GET renders the response form with oficio details and documents. POST delegates to `ServicioOficio.procesar_respuesta_jud` to save the text response, optional file, and mark the oficio as finalizado (estatus → 4). |
+| GET, POST | `/oficios/nueva_peticion` | Logged in | Creates a JUD petition addressed to the subdirector of the current user's area. POST delegates to `ServicioOficio.procesar_peticion_jud`, then sends an email notification to the subdirector. |
+| GET, POST | `/oficios/nueva_peticion_subdirector` | Logged in | Creates a subdirector petition addressed to a gestor selected from the form. POST delegates to `ServicioOficio.procesar_peticion_subdirector`, then sends an email to the selected gestor. |
+| GET, POST | `/oficios/responder_peticion_de_jud/<id_peticion>` | Subdirector only | GET renders the petition response form. POST reads the `decision` field (`"APROBADO"` → estatus 6, else → estatus 5) and calls `registrar_respuesta_peticion_db`. |
+| GET, POST | `/oficios/responder_peticion_subdirector/<id_peticion>` | Gestor only | GET renders the petition response form. POST reads the `decision` field (`"ACEPTADA"` → estatus 6, `"RECHAZADO"` → estatus 5) and calls `registrar_respuesta_peticion_db`. |
+| GET | `/oficios/api/subdirector/<id_area>` | Logged in | AJAX endpoint. Returns JSON with the subdirector data for the given area. Used by the oficio creation form to display recipient info dynamically. |
+
+### AJAX endpoint — `/oficios/api/subdirector/<id_area>`
+
+Called client-side when the gestor selects a destination area. Returns JSON.
+
+**Success response** (subdirector found):
+
+```json
+{
+  "encontrado": true,
+  "nombre": "María García López",
+  "puesto": "Subdirectora de Recursos Humanos",
+  "correo": "m.garcia@amh.gob.mx"
+}
+```
+
+**Not-found response**:
+
+```json
+{
+  "encontrado": false
+}
+```
+
+---
+
+## Admin Blueprint
+
+**Prefix:** `/admin`  
+**Module:** `app/routes/admin.py`  
+**Blueprint name:** `admin`
+
+All routes in this blueprint check `current_user.es_administrador` and redirect to `/auth/login` if the check fails.
+
+| Method | Path | Access | Description |
+|--------|------|--------|-------------|
+| GET | `/admin/panel_de_administrador` | Admin only | Renders the admin panel with lists of all active users, available roles, available areas, and the 100 most recent oficios. |
+| GET, POST | `/admin/crear_usuario` | Admin only | Processes the create-user form submitted from the admin panel. Validates that `id_rol` and `id_area` are present, then calls `crear_nuevo_usuario`. Always redirects back to the admin panel on completion. |
+| GET, POST | `/admin/eliminar_usuario/<id_usuario>` | Admin only | Soft-deletes a user (`activo = 0`) by calling `eliminar_usuario`. Redirects to the admin panel. |
+| POST | `/admin/eliminar_oficio/<id_oficio>` | Admin only | Hard-deletes an oficio and its physical files by calling `ServicioOficio.eliminar_oficio_total`. Redirects to the admin panel. |
+
+---
+
+## Access control summary
+
+| Role | `id_rol` | Can access |
+|------|----------|------------|
+| Gestor | `1` | Dashboard, crear_oficio, ver_detalles_oficio, ver_detalles_peticion, nueva_peticion, nueva_peticion_subdirector, responder_peticion_subdirector |
+| Subdirector | `2` | Dashboard, ver_detalles_oficio, ver_detalles_peticion, reasignar_oficio, turnar_oficio_a_jud, nueva_peticion, nueva_peticion_subdirector, responder_peticion_de_jud |
+| JUD | `3` | Dashboard, ver_detalles_oficio, ver_detalles_peticion, atender_oficio, nueva_peticion |
+| Administrador | `4` | Admin panel and all admin routes; redirected away from oficio routes to the admin panel |
+
+<Note>
+  Role checks are enforced at the route handler level — there is no middleware or decorator abstraction for roles. A user with the wrong role who hits a restricted URL will be redirected, not receive an HTTP 403 or 401.
+</Note>

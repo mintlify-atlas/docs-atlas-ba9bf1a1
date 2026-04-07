@@ -1,0 +1,193 @@
+---
+title: "Roles and permissions"
+description: "The four user roles in AMH Sistema de Oficios and what each can do"
+---
+
+## Overview
+
+AMH Sistema de Oficios has four distinct roles, each stored as an integer in the `id_rol` column of the `usuarios` table. Role checks are performed at runtime via Python properties on the `Usuario` class (e.g., `current_user.es_gestor`), which compare `id_rol` against a fixed value.
+
+```python
+# app/models/usuario.py
+@property
+def es_gestor(self):
+    return self.id_rol == 1
+
+@property
+def es_subdirector(self):
+    return self.id_rol == 2
+
+@property
+def es_jud(self):
+    return self.id_rol == 3
+
+@property
+def es_administrador(self):
+    return self.id_rol == 4
+```
+
+<Note>
+  Subdirectors and JUDs are area-scoped. Every user record carries an `id_area` field that determines which organizational area they belong to. When a Subdirector reviews incoming oficios, they only see oficios assigned to their `id_area`. JUDs are likewise fetched and assigned by `id_area` using `obtener_juds_por_area(id_area)`.
+</Note>
+
+---
+
+## Role cards
+
+<CardGroup cols={2}>
+  <Card title="Gestor" icon="pen-to-square">
+    **`id_rol = 1`**
+
+    The Gestor originates all official documents. They fill in the oficio form, choose the destination area, upload the main file plus any annexes, and submit. The system automatically routes the oficio to the Subdirector of the chosen area.
+
+    **Can do:**
+    - Create new oficios (`/oficios/crear_oficio`)
+    - View all oficios they have created
+    - View the final response text and attached response file once the JUD finalizes the oficio
+    - Receive peticiones from Subdirectores and approve or reject them (`/oficios/responder_peticion_subdirector`)
+
+    **Cannot do:**
+    - Assign oficios to JUDs
+    - Respond to oficios as a JUD
+    - Access the admin panel
+    - Create peticiones (they receive them)
+
+    **Dashboard KPIs:**
+
+    | KPI | Description |
+    |-----|-------------|
+    | Enviados | Total oficios created by this Gestor |
+    | En Revisión | Oficios in status 1 or 3 (pending review) |
+    | Finalizados | Oficios in status 4 |
+  </Card>
+
+  <Card title="Subdirector" icon="users-between-lines">
+    **`id_rol = 2`**
+
+    The Subdirector is the first recipient of every oficio sent to their area. They review the oficio, add instructions, and assign it to one of the JUDs in their area. They also handle peticiones raised by their JUDs.
+
+    **Can do:**
+    - View the inbox of oficios in status 1 assigned to them (`obtener_bandeja_entrada_subdirector`)
+    - Assign an oficio to a JUD, with instructions (`/oficios/turnar_oficio_a_jud`)
+    - View the history of all oficios in their area (statuses 2, 3, 4)
+    - Create peticiones addressed to a Gestor (`/oficios/nueva_peticion_subdirector`)
+    - Approve or reject peticiones from their JUDs (`/oficios/responder_peticion_de_jud`)
+
+    **Cannot do:**
+    - Create oficios
+    - Respond to oficios (that is the JUD's task)
+    - Access the admin panel
+
+    **Dashboard KPIs:**
+
+    | KPI | Description |
+    |-----|-------------|
+    | Recibidos | Total oficios received by the area |
+    | Por Asignar | Oficios assigned to this Subdirector with status 1 |
+    | Peticiones | Pending peticiones from JUDs (status 1) directed to this Subdirector |
+  </Card>
+
+  <Card title="JUD" icon="file-circle-check">
+    **`id_rol = 3`**
+
+    The JUD (Jefe de Unidad Departamental) is the final processor of an oficio. Once the Subdirector assigns the oficio, the JUD writes the formal response and optionally attaches an official response document.
+
+    **Can do:**
+    - View pending oficios assigned to them (status 2)
+    - Respond to oficios with a text response and an optional `RESPUESTA_OFICIAL` file (`/oficios/atender_oficio`)
+    - View their completed oficios (status 3 and 4)
+    - Create peticiones addressed to their Subdirector (`/oficios/nueva_peticion`)
+
+    **Cannot do:**
+    - Create oficios
+    - Assign oficios to other users
+    - Respond to peticiones (they create them, not resolve them)
+    - Access the admin panel
+
+    **Dashboard KPIs:**
+
+    | KPI | Description |
+    |-----|-------------|
+    | Pendientes | Oficios assigned to this JUD with status 2 |
+    | Atendidos | Oficios this JUD has responded to (status 3 or 4) |
+    | Peticiones | Total peticiones this JUD has submitted |
+  </Card>
+
+  <Card title="Administrador" icon="shield-halved">
+    **`id_rol = 4`**
+
+    The Administrador has a separate management panel and does not participate in the oficio workflow. Their scope is user and system management only.
+
+    **Can do:**
+    - View all users in the system (`obtener_todos_los_usuarios`)
+    - Create new users with any role and area (`/admin/crear_usuario`)
+    - Soft-delete users — sets `activo = 0`, preserving all historical records (`/admin/eliminar_usuario`)
+    - View a summary list of the last 100 oficios across the whole system
+    - Hard-delete an oficio and all its related records and physical files (`/admin/eliminar_oficio`)
+
+    **Cannot do:**
+    - Create or respond to oficios
+    - Create or respond to peticiones
+    - Access the standard `/oficios/panel_de_control` dashboard (they are redirected to `/admin/panel_de_administrador`)
+
+    **Dashboard KPIs:** None — the admin panel shows full user and oficio tables instead of KPI counters.
+  </Card>
+</CardGroup>
+
+---
+
+## Permission matrix
+
+| Action | Gestor | Subdirector | JUD | Administrador |
+|--------|:------:|:-----------:|:---:|:-------------:|
+| Create oficio | ✓ | — | — | — |
+| View own oficios | ✓ | — | — | — |
+| Assign oficio to JUD | — | ✓ | — | — |
+| Respond to oficio | — | — | ✓ | — |
+| Create petición | — | ✓ | ✓ | — |
+| Respond to petición | ✓ | ✓ | — | — |
+| Manage users | — | — | — | ✓ |
+| Delete oficios | — | — | — | ✓ |
+| View all oficios (system-wide) | — | — | — | ✓ |
+
+---
+
+## Route-level enforcement
+
+Every sensitive route checks the role property before processing the request:
+
+```python
+# app/routes/oficios.py — Gestor-only route
+@bp_oficios.route("/crear_oficio", methods=["GET", "POST"])
+@login_required
+def crear_oficio():
+    if not current_user.es_gestor:
+        return redirect(url_for("oficios.panel_control"))
+    ...
+
+# Subdirector-only route
+@bp_oficios.route("/turnar_oficio_a_jud/<int:id_oficio>", methods=["POST"])
+@login_required
+def turnar_oficio_a_jud(id_oficio):
+    if not current_user.es_subdirector:
+        return redirect(url_for("oficios.panel_control"))
+    ...
+
+# JUD-only route
+@bp_oficios.route("atender_oficio/<int:id_oficio>", methods=["GET", "POST"])
+@login_required
+def atender_oficio(id_oficio):
+    if not current_user.es_jud:
+        return redirect(url_for("oficios.panel_control"))
+    ...
+
+# Admin-only route
+@bp_admin.route("/panel_de_administrador")
+@login_required
+def panel_de_administrador():
+    if not current_user.es_administrador:
+        return redirect(url_for("auth.login"))
+    ...
+```
+
+Unauthorized users are redirected — Administrators are sent to the login page, all others are sent back to `/oficios/panel_de_control`.

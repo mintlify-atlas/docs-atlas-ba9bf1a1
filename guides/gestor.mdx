@@ -1,0 +1,116 @@
+---
+title: "Gestor guide"
+description: "How to create oficios, track their progress, and manage incoming peticiones as a Gestor"
+---
+
+## Dashboard overview
+
+When you log in as a Gestor, the dashboard displays three KPI cards and two data tables:
+
+<CardGroup cols={3}>
+  <Card title="Enviados" icon="paper-plane">
+    Total number of oficios you have created in the system.
+  </Card>
+  <Card title="En Revisión" icon="clock">
+    Oficios currently at status 1 (received by Subdirector) or status 3 (being processed), meaning no final response yet.
+  </Card>
+  <Card title="Finalizados" icon="circle-check">
+    Oficios that reached status 4 — fully attended and closed by the assigned JUD.
+  </Card>
+</CardGroup>
+
+Below the KPIs, the dashboard shows:
+
+- **Mis Oficios** — a table of all oficios you have created, with folio, subject, destination area, status, and creation date.
+- **Peticiones** — a section listing incoming peticiones sent to you by Subdirectores.
+
+---
+
+## Creating an oficio
+
+<Steps>
+  <Step title="Navigate to Crear Oficio">
+    Click the **Crear Oficio** link in the navigation. Only users with the Gestor role (`id_rol = 1`) can access this page — other roles are redirected to their own dashboard.
+  </Step>
+  <Step title="Fill in the oficio form">
+    Complete all required fields:
+
+    | Field | Description |
+    |---|---|
+    | **Folio** | Your manual reference number (e.g., `AMH/DGA/001/2025`). Must be unique in the system — submitting a duplicate folio returns an error. |
+    | **Area destino** | Select the destination area from the dropdown. The system looks up the active Subdirector for that area automatically. |
+    | **Asunto** | Short subject line for the oficio. |
+    | **Descripción de la solicitud** | Full body text describing the request. |
+    | **Correo adicional** | Optional external email address. If provided, a copy of the notification email is sent to this address in addition to the Subdirector. |
+  </Step>
+  <Step title="Attach the main document">
+    Upload the primary oficio document using the **Archivo** file input. PDF is the recommended format.
+
+    <Note>
+      If you attach a PDF, the system automatically stamps an **acuse de recibido** watermark on it before saving. The stamp includes your full name, the system-assigned consecutive folio, and the exact timestamp of submission. This happens via the `estampar_acuse_en_disco` utility and overwrites the original file in place. Non-PDF files (DOC, DOCX, XLS, XLSX, JPG, JPEG, PNG) are saved without modification.
+    </Note>
+  </Step>
+  <Step title="Attach annexes (optional)">
+    Use the **Anexos** multi-file input to attach any supporting documents. Each file is validated against the allowed extensions list. You can attach multiple files at once. Annexes are stored with type `ANEXO_SOLICITUD` in the database; the main document is stored as `SOLICITUD`.
+  </Step>
+  <Step title="Submit">
+    Click the submit button. The system:
+
+    1. Verifies the selected area has an active Subdirector — if not, submission is blocked.
+    2. Assigns a consecutive folio number generated from the `folios_contador` table for the current year. The counter is incremented atomically to prevent duplicates under concurrent submissions.
+    3. Saves the oficio record to the `oficios` table with initial status 1.
+    4. Saves all files to `static/uploads/{id_oficio}/` on disk.
+    5. Creates a history entry in `historial_oficios`.
+    6. Sends an email notification to the Subdirector (and to `correo_adicional` if provided) with all attached files.
+
+    On success you are redirected to the dashboard with a confirmation message. If the folio already exists, you remain on the form and see an error.
+  </Step>
+</Steps>
+
+<Tip>
+  The **folio consecutivo** is separate from your manual folio. It is an auto-incremented number scoped to the current calendar year (e.g., the 12th oficio submitted in 2025 receives consecutive folio `12`). This system folio is what gets stamped on the PDF acuse and what appears in JUD notification emails. Your manual folio is used for cross-referencing with external paper records.
+</Tip>
+
+---
+
+## Tracking an oficio
+
+From the **Mis Oficios** table on the dashboard, click on any row to open the oficio detail view. This page shows:
+
+- Full oficio metadata: both folios, subject, description, creation date, remitente, and destinatario.
+- Current status and, once the JUD responds, the response text and response date.
+- All attached files (main document and annexes), downloadable individually.
+- The complete **movement history** — a chronological log of every status change, the user who made it, and the timestamp.
+
+---
+
+## Responding to a Subdirector petición
+
+Incoming peticiones from Subdirectores appear in the **Peticiones** section of your dashboard. Each petición shows folio, subject, description, and current status.
+
+<Steps>
+  <Step title="Open the petición">
+    Click on a petición to open the detail view. You will see the full petición metadata and any files the Subdirector attached.
+  </Step>
+  <Step title="Review the attached files">
+    Download and review the Subdirector's supporting documents from the file list.
+  </Step>
+  <Step title="Write your response">
+    Enter your response text in the response field.
+  </Step>
+  <Step title="Accept or reject">
+    Click **ACEPTADA** to approve the petición (sets status to `id_estatus = 6`) or **RECHAZADO** to reject it (sets status to `id_estatus = 5`). You must click one of these buttons to submit — the form validates that a decision button was pressed before saving.
+  </Step>
+</Steps>
+
+---
+
+## Supported file formats
+
+The following file extensions are accepted for all uploads (main documents, annexes, and petición attachments):
+
+```
+pdf, doc, docx, xls, xlsx, jpg, jpeg, png
+```
+
+Files with any other extension are rejected and the entire submission is rolled back.
